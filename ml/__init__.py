@@ -1,6 +1,8 @@
-"""ML layer for semantic comparison and alignment."""
+"""ML slice — embeddings, scoring, classification, metrics, concepts, pipeline.
 
-from .semantic_engine import compare_sentences
-from .llm_explainer import generate_explanations
+Public entry point: ``ml.pipeline.run_diff``.
 
-__all__ = ["compare_sentences", "generate_explanations"]
+Receives an ``AlignmentResult`` from the backend lead's ``align()`` (or from
+``ml._mock_align`` during pre-integration development) and produces the full
+``DiffResponse`` defined in ``backend/models/schemas.py``.
+"""

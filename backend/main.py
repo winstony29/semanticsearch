@@ -1,7 +1,17 @@
+import os
+import sys
+from pathlib import Path
+
+# Make the project root importable so sibling packages (e.g. `ml`) resolve
+# regardless of cwd. The existing `from routes import ...` style continues
+# to work because `backend/` is the runtime cwd.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-import os
 
 from routes import compare, explanation
 

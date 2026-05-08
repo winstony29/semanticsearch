@@ -1,6 +1,9 @@
+# ML slice runtime dependencies. Mirror of the ML-relevant pins in
+# backend/requirements.txt. Backend is the canonical install target; this
+# file exists so the ML slice can be installed standalone for unit testing.
+
 numpy==1.26.4
-scikit-learn==1.5.2
-scipy==1.14.1
 openai==1.54.3
-anthropic==0.39.0
-sentence-transformers==3.3.1
+tenacity==9.0.0
+python-Levenshtein==0.26.1
+pydantic==2.9.2
