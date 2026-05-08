@@ -12,9 +12,7 @@ import asyncio
 import time
 
 from backend.models.schemas import (
-    AlignedPair,
     ClauseRendering,
-    Concept,
     ConceptDiff,
     DiffResponse,
     PairRendering,
@@ -29,7 +27,8 @@ from ml.classification import (
 from ml.concepts import extract_concepts
 from ml.embeddings import embed_clauses
 from ml.metrics import aggregate_metrics
-from ml.scoring import score_alignment
+from ml.scoring import score_pairs
+from ml.thresholds import FULL_DRIFT
 
 
 async def run_diff(before: str, after: str) -> DiffResponse:
@@ -54,7 +53,7 @@ async def run_diff(before: str, after: str) -> DiffResponse:
     embeddings = await embed_task
 
     # Score and classify the alignment.
-    scored = score_alignment(alignment.pairs, embeddings)
+    scored = score_pairs(alignment.pairs, embeddings)
     kept_pairs, split_clauses = classify_pairs(scored)
     unmatched_classified = classify_unmatched(
         alignment.unmatched_before, alignment.unmatched_after
@@ -131,7 +130,7 @@ def _build_before_clauses(
                     id=cc.clause.id,
                     text=cc.clause.text,
                     classification="removed",
-                    drift_score=100.0,
+                    drift_score=FULL_DRIFT,
                     paired_with=None,
                 )
             )
@@ -144,7 +143,7 @@ def _build_before_clauses(
                     id=cc.clause.id,
                     text=cc.clause.text,
                     classification="removed",
-                    drift_score=100.0,
+                    drift_score=FULL_DRIFT,
                     paired_with=None,
                 )
             )
@@ -180,7 +179,7 @@ def _build_after_clauses(
                     id=cc.clause.id,
                     text=cc.clause.text,
                     classification="added",
-                    drift_score=100.0,
+                    drift_score=FULL_DRIFT,
                     paired_with=None,
                 )
             )
@@ -193,7 +192,7 @@ def _build_after_clauses(
                     id=cc.clause.id,
                     text=cc.clause.text,
                     classification="added",
-                    drift_score=100.0,
+                    drift_score=FULL_DRIFT,
                     paired_with=None,
                 )
             )

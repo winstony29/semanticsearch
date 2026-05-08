@@ -40,3 +40,11 @@ ALIGNMENT_NAME: str = "hungarian"
 # window; this is a defensive ceiling well below that to keep latency and
 # cost predictable.
 MAX_CONCEPT_INPUT_CHARS: int = 60_000
+
+
+# ---- Sentinels -------------------------------------------------------------
+
+# Drift score assigned to clauses that have no partner — added, removed, or
+# split-off from a low-similarity Hungarian pair. Treated as "fully drifted"
+# because there is nothing to compare against.
+FULL_DRIFT: float = 100.0

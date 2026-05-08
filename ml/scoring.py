@@ -9,7 +9,7 @@ cosine_to_drift remap (clamped, 0–100 scale).
 import numpy as np
 
 from backend.models.schemas import AlignedPair
-from ml.thresholds import DRIFT_FLOOR, DRIFT_CEIL
+from ml.thresholds import DRIFT_CEIL, DRIFT_FLOOR
 
 
 def score_pair(before_emb: np.ndarray, after_emb: np.ndarray) -> float:
@@ -24,19 +24,24 @@ def cosine_to_drift(similarity: float) -> float:
     return round((1.0 - sim) / (DRIFT_CEIL - DRIFT_FLOOR) * 100.0, 2)
 
 
-def score_alignment(
-    alignment: list[AlignedPair],
+def score_pairs(
+    pairs: list[AlignedPair],
     embeddings: dict[str, np.ndarray],
 ) -> list[tuple[AlignedPair, float, float]]:
-    """Score all pairs and return (pair, similarity, drift) tuples.
+    """Score every aligned pair and return ``(pair, similarity, drift)`` tuples.
 
-    Pure/sync — no I/O.
+    Pure / sync — no I/O.
     """
     result: list[tuple[AlignedPair, float, float]] = []
-    for pair in alignment:
+    for pair in pairs:
         before_emb = embeddings[pair.before.id]
         after_emb = embeddings[pair.after.id]
         sim = score_pair(before_emb, after_emb)
         drift = cosine_to_drift(sim)
         result.append((pair, sim, drift))
     return result
+
+
+# Backwards-compat alias. Prefer score_pairs in new code; this exists so
+# any pre-rename caller keeps working until next sweep.
+score_alignment = score_pairs

@@ -92,7 +92,9 @@ class ExplanationResponse(BaseModel):
 
 Classification = Literal["unchanged", "modified", "added", "removed"]
 ConceptStatus = Literal["new", "weakened", "strengthened", "unchanged"]
-ConceptExtractionStatus = Literal["ok", "skipped", "failed"]
+# DiffRequest enforces min_length=1 on both sides, so concept extraction
+# always sees real input — there is no "skipped" path from the public API.
+ConceptExtractionStatus = Literal["ok", "failed"]
 
 
 # ----- Request -----
