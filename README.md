@@ -153,23 +153,29 @@ Use the sample data in `test_data/`:
 
 ## 🔬 ML Alignment Experiments (For Nickolas)
 
-Multiple alignment methods have been implemented and tested:
+**🚀 TRY IT NOW - No API keys needed!**
 
 ```bash
 cd ml
-python run_experiments.py --methods all --test-cases all
+python quick_test.py        # 30 seconds - one clear example
+python visual_demo.py        # 2 minutes - see similarity matrices
+python demo.py               # 5 minutes - full interactive walkthrough
 ```
 
-**Available methods:**
+All demos use smart mock embeddings so you can test RIGHT NOW!
+
+**Available alignment methods:**
 - `lexical_hungarian` - TF-IDF similarity (fast but fails on paraphrasing)
-- `semantic_hungarian` - Embedding-based (recommended for MVP)
+- `semantic_hungarian` - Embedding-based (recommended for MVP) ⭐
 - `hybrid_hungarian` - Lexical pre-filter + semantic refinement
 - `greedy_with_merges` - Handles 2→1 and 1→2 sentence merging/splitting
-- `adaptive_hungarian` - Auto-selects based on quality (recommended for production)
+- `adaptive_hungarian` - Auto-selects based on quality (recommended for production) ⭐
 
 **Test cases:** 12 edge cases including heavy paraphrasing, merges, splits, reordering, etc.
 
-See `ml/NICKOLAS_README.md` for detailed analysis and recommendations.
+**Docs:**
+- `ml/DEMO_GUIDE.md` - How to run all the demos
+- `ml/NICKOLAS_README.md` - Deep dive analysis and recommendations
 
 ## 🛠️ Implementation Status
 
