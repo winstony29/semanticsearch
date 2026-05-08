@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routes import compare, explanation
+from routes import compare, explanation, diff
 
 # Load environment variables
 load_dotenv()
@@ -38,6 +38,7 @@ app.add_middleware(
 # Include routers
 app.include_router(compare.router, prefix="/compare", tags=["compare"])
 app.include_router(explanation.router, prefix="/explanation", tags=["explanation"])
+app.include_router(diff.router, prefix="/api/diff", tags=["diff"])
 
 
 @app.get("/")
