@@ -151,6 +151,26 @@ Use the sample data in `test_data/`:
 # Expected: 1 GREEN, 1 YELLOW, 1 ADDED
 ```
 
+## 🔬 ML Alignment Experiments (For Nickolas)
+
+Multiple alignment methods have been implemented and tested:
+
+```bash
+cd ml
+python run_experiments.py --methods all --test-cases all
+```
+
+**Available methods:**
+- `lexical_hungarian` - TF-IDF similarity (fast but fails on paraphrasing)
+- `semantic_hungarian` - Embedding-based (recommended for MVP)
+- `hybrid_hungarian` - Lexical pre-filter + semantic refinement
+- `greedy_with_merges` - Handles 2→1 and 1→2 sentence merging/splitting
+- `adaptive_hungarian` - Auto-selects based on quality (recommended for production)
+
+**Test cases:** 12 edge cases including heavy paraphrasing, merges, splits, reordering, etc.
+
+See `ml/NICKOLAS_README.md` for detailed analysis and recommendations.
+
 ## 🛠️ Implementation Status
 
 ### ✅ Completed (Pre-hackathon)
@@ -158,6 +178,9 @@ Use the sample data in `test_data/`:
 - [x] All Pydantic models (data contract)
 - [x] Sentence tokenization with spaCy
 - [x] ML pipeline skeleton (embeddings + Hungarian)
+- [x] **5 different alignment methods with experiments**
+- [x] **12 edge case test scenarios**
+- [x] **Experiment comparison framework**
 - [x] LLM explanation module
 - [x] Frontend structure with React + TypeScript
 - [x] All TypeScript types (data contract)
@@ -174,11 +197,12 @@ Use the sample data in `test_data/`:
 - [ ] Test end-to-end with real ML pipeline
 
 **Nickolas (ML):**
+- [ ] Run experiments with real embeddings (`python ml/run_experiments.py`)
+- [ ] Choose alignment method (semantic_hungarian for MVP, adaptive for production)
 - [ ] Implement actual embedding API call (OpenAI or sentence-transformers)
-- [ ] Test Hungarian alignment with real data
-- [ ] Calibrate similarity thresholds (0.85, 0.60)
+- [ ] Calibrate similarity thresholds based on experiment results
 - [ ] Test LLM explanation prompt quality
-- [ ] Handle edge cases (empty, identical, totally rewritten)
+- [ ] Integrate chosen method into semantic_engine.py
 
 **FE Engineer 1 (Diff Viewer):**
 - [ ] Implement full styling for diff viewer
