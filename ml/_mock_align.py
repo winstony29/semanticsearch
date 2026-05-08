@@ -43,11 +43,13 @@ _ORIGINAL_AFTER = (
 )
 
 
-def mock_align(before_text: str, after_text: str) -> AlignmentResult:
+async def mock_align(before_text: str, after_text: str) -> AlignmentResult:
     """Return a hand-crafted ``AlignmentResult`` covering all classification cases.
 
-    The arguments are accepted to match the real ``align()`` signature but are
-    not actually used — the output is fixed.
+    Async to match the contract of the real ``align()`` (which will likely
+    perform I/O — embedding lookups for hybrid methods, etc.). The arguments
+    are accepted to match the real signature but are not actually used here —
+    the output is fixed.
     """
 
     pairs = [

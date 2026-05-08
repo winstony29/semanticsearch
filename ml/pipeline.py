@@ -44,7 +44,7 @@ async def run_diff(before: str, after: str) -> DiffResponse:
     start = time.perf_counter()
 
     # Step 1: Align documents.
-    alignment = align(before, after)
+    alignment = await align(before, after)
 
     # Step 2: Run embeddings + concept extraction concurrently.
     embed_task = asyncio.create_task(embed_clauses(alignment))

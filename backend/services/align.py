@@ -16,7 +16,7 @@ from backend.models.schemas import AlignmentResult
 from ml._mock_align import mock_align
 
 
-def align(before: str, after: str) -> AlignmentResult:
+async def align(before: str, after: str) -> AlignmentResult:
     """Align two documents into clause pairs + unmatched-side lists.
 
     Args:
@@ -32,4 +32,4 @@ def align(before: str, after: str) -> AlignmentResult:
         output is *fixed* — it ignores the input strings and returns
         hand-crafted clauses suitable for development and threshold tuning.
     """
-    return mock_align(before, after)
+    return await mock_align(before, after)

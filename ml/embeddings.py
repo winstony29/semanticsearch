@@ -9,17 +9,25 @@ with batching, L2 normalisation, empty-string protection, and tenacity retry.
 import os
 
 import numpy as np
-from openai import AsyncOpenAI, RateLimitError, APIConnectionError, APIStatusError
-from tenacity import retry, wait_random_exponential, stop_after_attempt
+from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_random_exponential,
+)
 
 from backend.models.schemas import AlignmentResult
 from ml.thresholds import EMBEDDING_MODEL
 
+_RETRYABLE_OPENAI_ERRORS = (RateLimitError, APIConnectionError, APIStatusError)
+
 
 @retry(
-    retry=lambda exc: isinstance(exc, (RateLimitError, APIConnectionError, APIStatusError)),
+    retry=retry_if_exception_type(_RETRYABLE_OPENAI_ERRORS),
     wait=wait_random_exponential(min=1, max=30),
     stop=stop_after_attempt(6),
+    reraise=True,
 )
 async def embed_clauses(alignment: AlignmentResult) -> dict[str, np.ndarray]:
     """Embed every clause in alignment and return id -> normalized vector."""
