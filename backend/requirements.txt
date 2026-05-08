@@ -13,3 +13,7 @@ httpx==0.27.2
 numpy==1.26.4
 tenacity==9.0.0
 python-Levenshtein==0.26.1
+
+# Test deps (used by tests/ — install with the rest for full local dev)
+pytest==8.3.3
+pytest-asyncio==0.24.0

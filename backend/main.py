@@ -18,6 +18,17 @@ from routes import compare, explanation, diff
 # Load environment variables
 load_dotenv()
 
+# Warn loudly at boot if API keys required by /api/diff are missing.
+# Doesn't block startup — legacy /compare may still work, and we want the
+# server to come up so health checks pass.
+_missing_keys = [k for k in ("OPENAI_API_KEY",) if not os.getenv(k)]
+if _missing_keys:
+    print(
+        f"WARN: missing env var(s) {_missing_keys}. "
+        "POST /api/diff will fail at request time until they are set.",
+        file=sys.stderr,
+    )
+
 # Create FastAPI app
 app = FastAPI(
     title="Semantic Diff API",
