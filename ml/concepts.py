@@ -24,6 +24,7 @@ Read the BEFORE and AFTER texts carefully. Identify 3-8 key concepts in each doc
 
 For each concept, classify its status relative to the two versions:
 - "new": appears only in AFTER
+- "removed": appears only in BEFORE (dropped in AFTER)
 - "weakened": exists in both but is less strict/obligatory in AFTER
 - "strengthened": exists in both but is more strict/obligatory in AFTER
 - "unchanged": exists in both with essentially the same meaning and strength
