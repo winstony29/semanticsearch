@@ -1,6 +1,6 @@
 # Technology Stack
 
-**Analysis Date:** 2026-05-09
+**Analysis Date:** 2026-05-09 (post-merge of `origin/main`)
 
 ## Languages
 
@@ -9,79 +9,87 @@
 - TypeScript 5.5.3 — Frontend UI (`frontend/src/`)
 
 **Secondary:**
-- JavaScript — Vite/build glue (transpiled output)
+- JavaScript — Vite build glue
 
 ## Runtime
 
 **Environment:**
-- Python 3.10+ via FastAPI 0.115.0 + Uvicorn 0.32.0 (async HTTP server)
-- Node.js 18+ for Vite dev server (port 5173)
-- No `.python-version` or `.nvmrc` committed — versions documented in `README.md`
+- FastAPI 0.115.0 + Uvicorn 0.32.0 (async Python HTTP server) — `backend/main.py`
+- Node.js 18+ for Vite dev server (port 5173) — `frontend/`
+- No `.python-version` / `.nvmrc` committed
 - No Docker / containerization
 
 **Package Manager:**
-- Python: `pip` with `backend/requirements.txt` and `ml/requirements.txt` (mirrors ML deps)
-- Frontend: `npm` with `frontend/package.json`
-- No lockfiles committed (`package-lock.json`, `poetry.lock`, `uv.lock` absent — likely gitignored or not generated)
+- Python: `pip` with `backend/requirements.txt` and `ml/requirements.txt`
+- Frontend: `npm` with `frontend/package.json` (no lockfile committed)
 
 ## Frameworks
 
 **Core:**
-- FastAPI 0.115.0 — Async Python web framework with auto OpenAPI docs (`backend/main.py`)
-- React 18.3.1 — Frontend UI framework
-- Vite 5.4.1 — Frontend bundler / dev server (`frontend/vite.config.ts`)
+- FastAPI 0.115.0 — Async Python web framework — `backend/main.py`
+- React 18.3.1 — Frontend UI
+- Vite 5.4.1 — Frontend bundler — `frontend/vite.config.ts`
+- Pydantic 2.9.2 — Schemas + validation — `backend/models/schemas.py`
 
 **Testing:**
-- pytest 8.3.3 — Test runner (`pytest.ini`)
-- pytest-asyncio 0.24.0 — Async test support (`asyncio_mode = auto`)
+- pytest 8.3.3 — Test runner — `pytest.ini`
+- pytest-asyncio 0.24.0 — `asyncio_mode = auto`
 
 **Build/Dev:**
-- Vite 5.4.1 with React plugin — TS transpilation + HMR
+- Vite 5.4.1 with React plugin
 - TypeScript 5.5.3 compiler
 
-**NLP / ML:**
-- spaCy 3.8.2 — Sentence tokenization (`backend/services/tokenizer.py`); requires `en_core_web_sm` model download
+**NLP / ML (multi-engine after merge):**
+- spaCy 3.8.2 — Multilingual sentence splitting — `backend/services/tokenizer.py` (lazy-loads `en_core_web_sm`, `zh_core_web_sm`, `ja_core_web_sm`, `ko_core_news_sm`, `de_core_news_sm`)
+- wtpsplit (SaT-3l) — Optional multilingual sentence tokenizer with regex fallback — `backend/services/tokenizer.py`
+- sentence-transformers 3.3.1 — Local embedding model `all-MiniLM-L6-v2` — provided as fallback in `QUICK_FIXES/fix1_embeddings_local.py` (not yet wired)
 
 ## Key Dependencies
 
 **Critical:**
-- `openai==1.54.3` — Embedding generation (`text-embedding-3-small`) and concept extraction (`gpt-4o-mini` structured output) — used in `ml/embeddings.py`, `ml/concepts.py`
-- `anthropic==0.39.0` — Reserved for LLM explanations; **installed but not yet integrated**
-- `pydantic==2.9.2` — Request/response schemas across `backend/models/schemas.py`
-- `tenacity==9.0.0` — Retry logic for OpenAI calls (`ml/embeddings.py`)
-- `numpy==1.26.4` — Embedding numerical ops (L2 normalization, cosine)
-- `scipy==1.14.1` — Linear assignment / Hungarian algorithm (used by `backend/services/_align_impl.py`)
-- `scikit-learn==1.5.2` — Cosine similarity helpers in vendored Winston code (`backend/services/_align_impl.py`)
-- `python-Levenshtein==0.26.1` — Text-edit % metric (`ml/metrics.py`)
-- `spacy==3.8.2` — Sentence segmentation (currently active in tokenizer; flagged for replacement, see `notes/multilingual-handoff.md`)
-
-**Infrastructure:**
-- `python-dotenv==1.0.1` — Load `.env` files at startup (`backend/main.py`)
+- `openai==1.54.3` — Embeddings (`text-embedding-3-small`) and chat (`gpt-4o-mini`) — `ml/embeddings.py`, `ml/concepts.py`
+- `anthropic==0.39.0` — Reserved; not used post-merge per `notes/ml-branch-handoff.md`
+- `pydantic==2.9.2` — All DTOs in `backend/models/schemas.py`
+- `tenacity==9.0.0` — Retry on OpenAI errors (6 attempts, exp. backoff) — `ml/embeddings.py`
+- `numpy==1.26.4` — Embedding math, alignment matrices
+- `scipy==1.14.1` — Hungarian assignment (`linear_sum_assignment`) — used in `backend/services/_align_impl.py` and `ml/alignment_methods.py`
+- `scikit-learn==1.5.2` — TF-IDF + cosine similarity — `ml/alignment_methods.py`
+- `sentence-transformers==3.3.1` — Local embedding fallback — `QUICK_FIXES/fix1_embeddings_local.py`
+- `python-Levenshtein==0.26.1` — String distance for text-edit metric
+- `spacy==3.8.2` — Multilingual sentence splitting
 
 ## Configuration
 
 **Environment:**
-- `.env` files via python-dotenv (no `config.py` / `settings.py`)
-- Backend template: `backend/.env.example` — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `PORT`, `HOST`, `CORS_ORIGINS`
-- Frontend template: `frontend/.env.example` — `VITE_API_URL`
-- ML tuning constants centralized in `ml/thresholds.py` (single source of truth — thresholds, model IDs, input caps, feature flags)
-- Feature flag: `USE_REAL_ALIGN` env var (default `0`) gates mock vs. real Hungarian alignment in `backend/services/align.py`
+- `.env` via python-dotenv (see `backend/.env.example`, `frontend/.env.example`)
+- `OPENAI_API_KEY` (required), `ANTHROPIC_API_KEY` (legacy/unused), `PORT`, `HOST`, `CORS_ORIGINS`
+- Frontend: `VITE_API_URL`
+
+**Feature flags:**
+- `USE_REAL_ALIGN` (env var, default `0`) — `backend/services/align.py` — gates mock vs. vendored Hungarian
+- `ALIGNMENT_PRE_PRUNES` — `ml/thresholds.py` (default `False`) — controls double-prune guard
+
+**Tunables (single source of truth):** `ml/thresholds.py`
+- `STABLE_THRESHOLD = 0.93`, `MODIFIED_THRESHOLD = 0.65`, `REMOVED_THRESHOLD = 0.65`
+- `DRIFT_FLOOR = 0.5`, `DRIFT_CEIL = 1.0`
+- `EMBEDDING_MODEL = "text-embedding-3-small"`, `CHAT_MODEL = "gpt-4o-mini"`
+- `MAX_CONCEPT_INPUT_CHARS = 60_000`
 
 **Build:**
-- `pytest.ini` — pytest config (asyncio_mode=auto, testpaths=tests)
-- `frontend/vite.config.ts` — Vite + React plugin + `/api` proxy to `http://localhost:8000`
-- `frontend/tsconfig.json` — TypeScript compiler options
+- `pytest.ini` — `asyncio_mode=auto`, `testpaths=tests`
+- `frontend/vite.config.ts`, `frontend/tsconfig.json`
 
 ## Platform Requirements
 
 **Development:**
-- Linux / macOS / Windows (any platform with Python 3.10+ and Node 18+)
-- Internet access required for OpenAI API (embeddings + concept extraction)
-- spaCy model download step: `python -m spacy download en_core_web_sm`
+- Linux / macOS / Windows
+- Python 3.10+ (uses `list[str]`, `dict[K,V]` PEP 585 generics)
+- Internet access for OpenAI API
+- spaCy models downloaded on demand: `python -m spacy download en_core_web_sm` (others optional)
+- GPU optional (sentence-transformers and spaCy both CPU-capable)
 
 **Production:**
-- Not deployed — local-only hackathon project
-- No CI/CD, Dockerfile, or deployment scripts detected
+- Not deployed; no Dockerfile, no CI, no deploy scripts
 
 ---
 

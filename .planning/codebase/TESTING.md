@@ -1,15 +1,13 @@
 # Testing Patterns
 
-**Analysis Date:** 2026-05-09
+**Analysis Date:** 2026-05-09 (post-merge of `origin/main`)
 
 ## Test Framework
 
 **Runner:**
-- pytest 8.3.3 (`backend/requirements.txt`)
-- pytest-asyncio 0.24.0
-- Config: `pytest.ini` at repo root
+- pytest 8.3.3 + pytest-asyncio 0.24.0
+- Config: `pytest.ini` (root)
 
-**`pytest.ini` content:**
 ```ini
 [pytest]
 asyncio_mode = auto
@@ -18,53 +16,45 @@ python_files = test_*.py
 addopts = -ra -q
 ```
 
-`asyncio_mode = auto` means `async def` test functions run without explicit `@pytest.mark.asyncio` (though some files still use it).
+`asyncio_mode = auto` lets `async def` test functions run without explicit decoration; some files still use `@pytest.mark.asyncio` for clarity.
 
-**Assertion library:**
-- pytest built-in `assert` + `pytest.raises`
+**Assertion library:** pytest built-in `assert` + `pytest.raises`
 
 **Run commands:**
 ```bash
-pytest                                # Run all tests in tests/
+pytest                                # All tests under tests/
 pytest -v                             # Verbose
 pytest tests/test_classification.py   # Single file
-pytest -k "test_above_stable"        # Filter by name
+pytest -k "above_stable"             # Filter by name
 ```
 
-No watch mode, no coverage flag configured by default.
+No watch mode, no coverage flag configured.
 
 ## Test File Organization
 
-**Location:** `tests/` directory only (per `pytest.ini` `testpaths = tests`)
+**pytest-collected (`tests/`):**
+- `tests/conftest.py` — `sys.path` setup; no `@pytest.fixture`-decorated fixtures
+- `tests/test_align_adapter.py` — Winston adapter (`backend/services/align.py`) with mocked OpenAI
+- `tests/test_classification.py` — `ml/classification.py` boundary tests
+- `tests/test_embeddings_retry.py` — tenacity retry behavior
+- `tests/test_metrics.py` — `aggregate_metrics()` counts and weighting
+- `tests/test_mock_align.py` — `ml/_mock_align.py` shape contract
+- `tests/test_pipeline.py` — `ml/pipeline.py::run_diff()` with mocked deps
+- `tests/test_scoring.py` — cosine + drift remap
 
-**Naming:** `test_<module>.py` mirrors source file naming
-- `tests/test_align_adapter.py` — `backend/services/align.py`
-- `tests/test_classification.py` — `ml/classification.py`
-- `tests/test_embeddings_retry.py` — `ml/embeddings.py`
-- `tests/test_metrics.py` — `ml/metrics.py`
-- `tests/test_mock_align.py` — `ml/_mock_align.py`
-- `tests/test_pipeline.py` — `ml/pipeline.py`
-- `tests/test_scoring.py` — `ml/scoring.py`
+**Standalone scripts (NOT collected by pytest — outside `testpaths`):**
+- `test_alignment.py` (root) — manual alignment runner
+- `test_all_alignments.py` (root) — alignment method comparison (uses real OpenAI; needs `OPENAI_API_KEY`)
+- `ml/quick_test.py`, `ml/run_experiments.py`, `ml/visual_demo.py`, `ml/demo_alignment_comparison.py` — runnable demos with `if __name__ == "__main__"` entry points
 
-**Structure:**
-```
-tests/
-├── conftest.py                  # sys.path setup; no fixtures
-├── test_align_adapter.py
-├── test_classification.py
-├── test_embeddings_retry.py
-├── test_metrics.py
-├── test_mock_align.py
-├── test_pipeline.py
-└── test_scoring.py
-```
+**Fixture corpus (NOT a pytest module):**
+- `ml/test_cases.py` — 12 hand-built edge cases under `TEST_CASES: dict`; helpers `get_test_case`, `get_all_test_cases`, `get_test_cases_by_difficulty`. Lower-case `test_*` name is incidental; not collected because `pytest.ini` restricts to `tests/`.
 
-## Test Structure
+## Suite Organization
 
-**Suite organization:** Class-based grouping (`Test<Subject>`) with method-level tests:
+Class-based grouping with `Test<Subject>` and method-level tests. Example from `tests/test_classification.py`:
 
 ```python
-# tests/test_classification.py
 class TestClassifyPairs:
     def test_above_stable_is_unchanged(self):
         scored = [(_pair(0), STABLE_THRESHOLD + 0.01, 5.0)]
@@ -86,18 +76,19 @@ class TestClassifyPairs:
 ```
 
 **Patterns:**
-- One-class-per-subject grouping
+- One class per subject
 - Method names describe the boundary or property under test
-- Inline arrange/act/assert with comments only when boundary intent isn't obvious
-- No `beforeEach`-style fixtures — each test self-contained
+- Inline arrange/act/assert
+- No setup/teardown helpers — each test is self-contained
 
 ## Mocking
 
-**Framework:** `unittest.mock` (`MagicMock`, `patch`, `patch.object`) combined with pytest-asyncio
+**Framework:** `unittest.mock` (`MagicMock`, `patch`, `patch.object`) + `monkeypatch` from pytest, combined with pytest-asyncio.
 
 **Patterns:**
+
 ```python
-# tests/test_align_adapter.py — patching the AsyncOpenAI client
+# tests/test_align_adapter.py — patching AsyncOpenAI
 @pytest.mark.asyncio
 async def test_real_align_smoke_identical_text():
     fake_client = MagicMock()
@@ -107,51 +98,44 @@ async def test_real_align_smoke_identical_text():
         result = await align_mod.align(before, after)
 ```
 
-**Helper factories** (defined in test files, not shared fixtures):
-- `_fake_create_factory()` — fake OpenAI client (`tests/test_align_adapter.py`)
-- `_pair(idx)`, `_br(...)`, `_pr(...)` — small test data builders
+```python
+# tests/test_pipeline.py — monkeypatch with @pytest.fixture
+@pytest.fixture
+def patched_pipeline(monkeypatch):
+    embeddings = _build_realistic_embeddings()
+    async def fake_embed(alignment):
+        return embeddings
+    monkeypatch.setattr(pipeline_mod, "embed_clauses", fake_embed)
+```
 
 **What gets mocked:**
-- `AsyncOpenAI` client (embeddings + chat completions)
-- The `USE_REAL_ALIGN` flag in `backend/services/align.py`
-- Specific module attributes via `patch.object`
+- `AsyncOpenAI` (embeddings + chat completions)
+- `USE_REAL_ALIGN` flag
+- `embed_clauses`, `extract_concepts` (via monkeypatch)
 
 **What does NOT get mocked:**
-- Pure compute functions (cosine, drift remap, classification thresholds)
-- Pydantic schema validation
+- Pure compute (cosine, drift remap, classification thresholds)
+- Pydantic schemas
 
 ## Fixtures and Factories
 
-**No `@pytest.fixture` decorators detected** — tests inline-create their data via helper functions in each file.
-
-**`tests/conftest.py`:** minimal — only adjusts `sys.path` so `backend.*` and `ml.*` imports resolve.
-
-**Special:** `ml/test_cases.py` is **not** a pytest module — it's a fixture corpus
-- 12 hand-built edge cases under `TEST_CASES: dict`
-- Helpers: `get_test_case()`, `get_all_test_cases()`, `get_test_cases_by_difficulty()`, `print_test_case_summary()`
-- Cherry-picked from `origin/main` for threshold-tuning experiments
-- Not collected by pytest because `pytest.ini` restricts to `tests/`
+- `tests/test_pipeline.py` defines a `@pytest.fixture` for the patched pipeline (only fixture in the suite)
+- Inline factory helpers per file: `_pair()`, `_br()`, `_pr()`, `_fake_create_factory()`, `_build_realistic_embeddings()`
+- Deterministic RNG seeding: `rng = np.random.default_rng(7)`
+- `tests/conftest.py` is minimal — `sys.path` setup only
 
 ## Coverage
 
-**Not configured.** No `--cov` flag, no `.coveragerc`, no coverage tool in `requirements.txt`. Coverage tracked only manually if at all.
+- Not configured. No `pytest-cov`, no `.coveragerc`, no `--cov` flag
+- No CI to enforce coverage
 
 ## Test Types Present
 
-**Unit tests (majority):**
-- `tests/test_classification.py` — boundary tests for `classify_pairs()` / `classify_unmatched()`
-- `tests/test_metrics.py` — `aggregate_metrics()` counting + weighting + edge cases
-- `tests/test_scoring.py` — cosine + drift remap pure compute
-
-**Integration / smoke tests:**
-- `tests/test_align_adapter.py` — Winston adapter end-to-end with mocked OpenAI
-- `tests/test_mock_align.py` — mock alignment shape contract
-- `tests/test_pipeline.py` — `run_diff()` wired with mocks
-
-**Regression tests:**
-- `tests/test_embeddings_retry.py` — verifies tenacity retry fires on `APIConnectionError`
-
-**E2E:** None against the live FastAPI server; closest substitute is `ml/demo.py` for manual integration runs.
+- **Unit:** `test_classification.py`, `test_metrics.py`, `test_scoring.py`
+- **Smoke / integration with mocks:** `test_align_adapter.py`, `test_mock_align.py`, `test_pipeline.py`
+- **Regression:** `test_embeddings_retry.py` (tenacity retry on `APIConnectionError`)
+- **E2E against live FastAPI server:** none
+- **Standalone runners (out-of-band):** `test_alignment.py`, `test_all_alignments.py`, `ml/quick_test.py`, `ml/visual_demo.py`, `ml/run_experiments.py`, `ml/demo_alignment_comparison.py`
 
 ## Common Patterns
 
@@ -160,9 +144,7 @@ async def test_real_align_smoke_identical_text():
 @pytest.mark.asyncio
 async def test_real_align_smoke_identical_text():
     result = await align_mod.align(before, after)
-    assert result.pairs[0].before_clause.text == ...
 ```
-(Decorator is technically optional under `asyncio_mode = auto`, but kept for clarity in some files.)
 
 **Error testing:**
 ```python
@@ -170,7 +152,7 @@ with pytest.raises(APIConnectionError):
     await emb.embed_clauses(alignment)
 ```
 
-**Retry attempt tracking:**
+**Retry-attempt counting:**
 ```python
 attempts = {"n": 0}
 async def failing_create(**kwargs):
@@ -178,11 +160,20 @@ async def failing_create(**kwargs):
     raise APIConnectionError(...)
 ```
 
-**Boundary testing:** Tests deliberately probe at-threshold values (`STABLE_THRESHOLD`, `STABLE_THRESHOLD + 0.01`, `STABLE_THRESHOLD - 0.01`) to lock down classification behavior.
+**Boundary testing:** Tests deliberately probe exact threshold values (`STABLE_THRESHOLD`, `STABLE_THRESHOLD + 0.01`, etc.).
 
-**Parametrize:** Not used. Multiple boundary tests are written as separate methods.
+**Parametrize / Snapshot:** Not used.
 
-**Snapshot:** Not used.
+## Status Discrepancy: TESTING_REPORT.md vs. reality
+
+`TESTING_REPORT.md` reports things like "100% (4/4) passed" and "Core Functionality Coverage: 75%". Those numbers refer to **manual runs of standalone scripts** (`test_alignment.py`, `ml/quick_test.py`, etc.), not the pytest suite.
+
+Actual pytest collection picks up only the 7 files under `tests/`. The standalone scripts at the repo root and under `ml/` are intentionally outside `testpaths`. The fixture corpus `ml/test_cases.py` exists but no test currently asserts against it.
+
+If a real coverage signal is needed, the gap to close is:
+- No live OpenAI integration test in pytest
+- No `/compare` or `/api/diff` endpoint test against the FastAPI app
+- Threshold-tuning corpus (`ml/test_cases.py`) is not wired into a regression test
 
 ---
 
