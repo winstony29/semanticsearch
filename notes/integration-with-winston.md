@@ -5,6 +5,28 @@ to the ML slice we built on the `ML` branch from `ML_ARCHITECTURE.md`.
 
 **Status:** not merged. Fetched only. Decision deferred.
 
+**Update 2026-05-09 — staging done.** Five integration prep items landed
+on the `ML` branch:
+
+1. Merged-clauses schema decided (option A — `paired_with: Optional[str |
+   list[str]]`). See `backend/models/schemas.py::ClauseRendering` and
+   `ML_ARCHITECTURE.md` §6.
+2. Adapter shim staged behind `USE_REAL_ALIGN` flag in
+   `backend/services/align.py`. Vendored copy of `semantic_hungarian` +
+   helpers in `backend/services/_align_impl.py`. Default still routes to
+   `mock_align`.
+3. `ALIGNMENT_PRE_PRUNES` flag added in `ml/thresholds.py`, threaded
+   through `pipeline.py`. Default `False`. Flip to `True` together with
+   `USE_REAL_ALIGN=1`.
+4. `pct_text_edited` now whitespace-normalised in `ml/metrics.py` so
+   reformatting-only edits read as 0%.
+5. Winston's `ml/test_cases.py` cherry-picked into `ml/test_cases.py` for
+   threshold-tuning corpus (14 fixtures, not pytest functions).
+
+Smoke test for the staged adapter lives in `tests/test_align_adapter.py`
+(3 cases, mocked OpenAI). When Winston pushes finished work, replace
+`backend/services/_align_impl.py` and flip the two flags.
+
 ---
 
 ## What Winston put on `origin/main`
