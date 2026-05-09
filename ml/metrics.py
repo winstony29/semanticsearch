@@ -7,9 +7,23 @@ Aggregates classified clauses into the ``DiffSummary``: counts, length-weighted
 ``pct_meaning_edited`` (alias of overall_drift).
 """
 
+import re
+
 from Levenshtein import distance as levenshtein_distance
 
 from backend.models.schemas import ClauseRendering, DiffSummary, PairRendering
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Collapse runs of whitespace to a single space and strip the ends.
+
+    Used before Levenshtein so a pure-reformatting edit (line breaks added,
+    indentation changed, multiple spaces collapsed) does not inflate the
+    `pct_text_edited` headline metric.
+    """
+    return _WHITESPACE_RE.sub(" ", text).strip()
 
 
 def aggregate_metrics(
@@ -68,9 +82,13 @@ def aggregate_metrics(
 
     overall_drift = max(0.0, min(100.0, overall_drift))
 
-    # Compute pct_text_edited: character-level Levenshtein.
-    lev_distance = levenshtein_distance(original_before, original_after)
-    max_len = max(len(original_before), len(original_after))
+    # Compute pct_text_edited: character-level Levenshtein on
+    # whitespace-normalised text. Reformatting (extra newlines, indentation
+    # changes) should not register as edits.
+    norm_before = _normalize_whitespace(original_before)
+    norm_after = _normalize_whitespace(original_after)
+    lev_distance = levenshtein_distance(norm_before, norm_after)
+    max_len = max(len(norm_before), len(norm_after))
     if max_len > 0:
         pct_text_edited = (lev_distance / max_len) * 100.0
     else:

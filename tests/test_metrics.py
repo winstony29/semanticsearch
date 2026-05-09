@@ -75,6 +75,25 @@ class TestAggregateMetrics:
         s = aggregate_metrics([], [], [], "abcd", "wxyz", elapsed_ms=0)
         assert s.pct_text_edited == 100.0
 
+    def test_pct_text_edited_ignores_whitespace_reformatting(self):
+        # Same content; only whitespace differs (newlines, indentation,
+        # collapsed double-spaces). Should read as 0% edit.
+        before = "Hello world. This is a test."
+        after = "  Hello   world.\n\n\tThis is a test.  "
+        s = aggregate_metrics([], [], [], before, after, elapsed_ms=0)
+        assert s.pct_text_edited == 0.0
+
+    def test_pct_text_edited_real_edit_still_counted(self):
+        # Whitespace differs AND a word changes. Edit should still register
+        # — only the whitespace noise gets stripped.
+        before = "Hello world. This is a test."
+        after = "Hello\nworld. That  is a test."
+        s = aggregate_metrics([], [], [], before, after, elapsed_ms=0)
+        assert s.pct_text_edited > 0.0
+        # Sanity bound: 4-char swap ("This"→"That") on a ~28-char string
+        # should be well under 50%.
+        assert s.pct_text_edited < 50.0
+
     def test_pct_meaning_edited_aliases_overall_drift(self):
         before = [_br("b0", "x", "modified", 30.0, "a0")]
         after = [_br("a0", "y", "modified", 30.0, "b0")]
