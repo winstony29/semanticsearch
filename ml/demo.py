@@ -1,298 +1,250 @@
-"""
-Quick demo to test alignment methods RIGHT NOW with fake data.
-
-No API keys needed! Uses mock embeddings that simulate semantic similarity.
+"""Runnable demo for the ML slice.
 
 Usage:
-    python demo.py
+    python -m ml.demo                   # Real OpenAI calls. Needs OPENAI_API_KEY.
+    python -m ml.demo --mock            # Deterministic mocks. No keys needed.
+    python -m ml.demo --before "..." --after "..."   # Pass your own text.
+
+The mock mode hand-builds embeddings such that the four pairs in
+``ml._mock_align`` classify as: unchanged (paraphrase), modified, unchanged
+(verbatim), and a low-similarity pair that gets split into removed+added.
+Useful for confirming the pipeline shape without burning credits.
 """
 
+from __future__ import annotations
+
+import argparse
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+# Make sibling packages importable when run as a script (not via -m).
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 import numpy as np
-from typing import List
-import warnings
-warnings.filterwarnings('ignore')
 
-# Import our alignment methods
-from alignment_methods import (
-    lexical_hungarian,
-    semantic_hungarian,
-    greedy_with_merges,
-    adaptive_hungarian
-)
+# Best-effort: force UTF-8 on stdout (Windows cmd defaults to cp1252).
+try:
+    sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+except Exception:  # pragma: no cover — older Pythons
+    pass
 
-# ============================================================================
-# SMART MOCK EMBEDDINGS (simulates semantic similarity)
-# ============================================================================
-
-def get_smart_mock_embeddings(sentences: List[str]) -> np.ndarray:
-    """
-    Generate mock embeddings that actually reflect semantic similarity.
-
-    Strategy:
-    - Similar sentences get similar embeddings
-    - Uses word overlap + simple heuristics
-    - Good enough to demonstrate alignment differences
-    """
-    embeddings = []
-
-    for sent in sentences:
-        # Extract features
-        words = set(sent.lower().split())
-
-        # Create a 384-dimensional embedding
-        # Use word presence as features
-        feature_vector = np.zeros(384)
-
-        # Simple hash-based embedding
-        for i, word in enumerate(words):
-            # Hash each word to multiple dimensions
-            hash_val = hash(word)
-            for j in range(10):  # Each word affects 10 dimensions
-                idx = (hash_val + j) % 384
-                feature_vector[idx] += 1.0
-
-        # Normalize
-        if np.linalg.norm(feature_vector) > 0:
-            feature_vector = feature_vector / np.linalg.norm(feature_vector)
-
-        embeddings.append(feature_vector)
-
-    return np.array(embeddings)
+import ml.pipeline as pipeline_mod
+from backend.models.schemas import ConceptDiff, DiffResponse
+from ml._mock_align import SAMPLE_AFTER, SAMPLE_BEFORE
 
 
-# ============================================================================
-# DEMO SCENARIOS
-# ============================================================================
+def _unit(v: np.ndarray) -> np.ndarray:
+    return v / np.linalg.norm(v)
 
-DEMO_SCENARIOS = {
-    "1. Light Paraphrasing (Easy)": {
-        "v1": [
-            "The dog ran quickly.",
-            "It was very excited.",
-            "The park was crowded."
-        ],
-        "v2": [
-            "The dog ran fast.",
-            "It was extremely excited.",
-            "The park was crowded."
-        ],
-        "what_to_notice": "All methods should match these correctly. High similarity."
-    },
 
-    "2. Heavy Paraphrasing (Lexical Fails)": {
-        "v1": [
-            "The company's revenue increased by 15% last quarter.",
-            "We are planning to expand into Asian markets.",
-            "Customer satisfaction has improved significantly."
-        ],
-        "v2": [
-            "Last quarter saw a 15% boost in corporate earnings.",
-            "Next year, we'll enter markets across Asia.",
-            "Clients are much happier with our service now."
-        ],
-        "what_to_notice": "Lexical will struggle (different words), semantic should work."
-    },
+def _near(v: np.ndarray, eps: float, rng: np.random.Generator) -> np.ndarray:
+    perp = _unit(rng.standard_normal(v.shape).astype("float32"))
+    perp = _unit(perp - perp.dot(v) * v)
+    return _unit(np.sqrt(max(0.0, 1.0 - eps * eps)) * v + eps * perp)
 
-    "3. Sentence Merging (2→1) - Hungarian Limitation": {
-        "v1": [
-            "The weather was sunny.",
-            "We decided to go to the beach.",
-            "Everyone had a great time."
-        ],
-        "v2": [
-            "The sunny weather prompted us to go to the beach.",
-            "Everyone had a great time."
-        ],
-        "what_to_notice": "Pure Hungarian can't detect merge. Greedy method might."
-    },
 
-    "4. Mixed Changes (Real World)": {
-        "v1": [
-            "We offer three pricing tiers.",
-            "Basic costs $10 per month.",
-            "Pro costs $30 per month.",
-            "All plans include support."
-        ],
-        "v2": [
-            "Our pricing has three tiers.",
-            "Basic is $10/month and Pro is $30/month.",
-            "We also offer a free trial."
-        ],
-        "what_to_notice": "Paraphrase + merge + addition. Tests all capabilities."
-    },
-
-    "5. Complete Rewrite (Should Reject Matching)": {
-        "v1": [
-            "The project is going well.",
-            "Revenue is increasing.",
-            "No changes needed."
-        ],
-        "v2": [
-            "Everything is broken.",
-            "We're losing money.",
-            "Major changes required immediately."
-        ],
-        "what_to_notice": "Methods should recognize low similarity and mark as deletions+additions."
+def _build_mock_embeddings() -> dict[str, np.ndarray]:
+    """Hand-built embeddings shaped to produce realistic similarity ranges
+    against the canned _mock_align output."""
+    rng = np.random.default_rng(7)
+    base = _unit(rng.standard_normal(1536).astype("float32"))
+    emb: dict[str, np.ndarray] = {
+        "b0": base,
+        "a0": _near(base, 0.24, rng),  # ~0.97 — unchanged
+        "b1": _unit(rng.standard_normal(1536).astype("float32")),
+        "b2": _unit(rng.standard_normal(1536).astype("float32")),
+        "b3": _unit(rng.standard_normal(1536).astype("float32")),
+        "b4": _unit(rng.standard_normal(1536).astype("float32")),
     }
+    emb["a1"] = _near(emb["b1"], 0.62, rng)  # ~0.78 — modified
+    emb["a2"] = emb["b2"].copy()             # 1.00 — unchanged (verbatim)
+    emb["a3"] = _near(emb["b3"], 0.95, rng)  # ~0.31 — split
+    emb["a4"] = _unit(rng.standard_normal(1536).astype("float32"))
+    return emb
+
+
+def _install_mocks() -> None:
+    """Monkey-patch the orchestrator's embed_clauses + extract_concepts."""
+    embeddings = _build_mock_embeddings()
+
+    async def fake_embed(_alignment):
+        return embeddings
+
+    async def fake_concepts(_before, _after):
+        return ConceptDiff(
+            summary="(mock) Termination broadened; payment terms removed; liability cap added.",
+            concepts=[],
+        ), "ok"
+
+    pipeline_mod.embed_clauses = fake_embed
+    pipeline_mod.extract_concepts = fake_concepts
+
+
+# ---------- Pretty-printing -------------------------------------------------
+
+_RESET = "\033[0m"
+_DIM = "\033[2m"
+_BOLD = "\033[1m"
+_GREEN = "\033[32m"
+_YELLOW = "\033[33m"
+_RED = "\033[31m"
+_BLUE = "\033[34m"
+_GREY = "\033[90m"
+
+
+_COLOR_BY_CLASS = {
+    "unchanged": _GREEN,
+    "modified": _YELLOW,
+    "removed": _RED,
+    "added": _BLUE,
 }
 
 
-# ============================================================================
-# DEMO RUNNER
-# ============================================================================
-
-def print_section(title: str):
-    """Print a formatted section header."""
-    print("\n" + "=" * 80)
-    print(f"  {title}")
-    print("=" * 80)
+def _supports_color() -> bool:
+    # Disable colour on Windows cmd unless ANSI is enabled.
+    return sys.stdout.isatty() and (os.name != "nt" or os.environ.get("WT_SESSION"))
 
 
-def print_sentences(label: str, sentences: List[str]):
-    """Print numbered sentences."""
-    print(f"\n{label}:")
-    for i, sent in enumerate(sentences):
-        print(f"  [{i}] {sent}")
+def _c(text: str, code: str) -> str:
+    return f"{code}{text}{_RESET}" if _supports_color() else text
 
 
-def print_result(method_name: str, result: dict):
-    """Print alignment results in a readable format."""
-    print(f"\n--- {method_name.upper()} ---")
-
-    pairs = result["pairs"]
-
-    # Group by status
-    matched = [p for p in pairs if p["status"] == "matched"]
-    added = [p for p in pairs if p["status"] == "added"]
-    deleted = [p for p in pairs if p["status"] == "deleted"]
-    merged = [p for p in pairs if p.get("status") == "merged"]
-
-    # Print matches
-    if matched:
-        print(f"\nMatched pairs ({len(matched)}):")
-        for p in matched:
-            score = p["similarity_score"]
-            color = "🟢" if score >= 0.85 else "🟡" if score >= 0.60 else "🔴"
-            print(f"  {color} v1[{p['v1_index']}] ↔ v2[{p['v2_index']}]  (similarity: {score:.2f})")
-
-    # Print merges
-    if merged:
-        print(f"\nMerged ({len(merged)}):")
-        for p in merged:
-            print(f"  🔀 v1[{p['v1_index']}] → v2[{p['v2_index']}]  (merged)")
-
-    # Print additions
-    if added:
-        print(f"\nAdded ({len(added)}):")
-        for p in added:
-            print(f"  ➕ v2[{p['v2_index']}]: NEW")
-
-    # Print deletions
-    if deleted:
-        print(f"\nDeleted ({len(deleted)}):")
-        for p in deleted:
-            print(f"  ➖ v1[{p['v1_index']}]: REMOVED")
-
-    # Summary
-    avg_sim = np.mean([p["similarity_score"] for p in matched]) if matched else 0.0
-    print(f"\nSummary: {len(matched)} matched, {len(added)} added, {len(deleted)} deleted")
-    if matched:
-        print(f"Average similarity: {avg_sim:.2f}")
+def _print_section(title: str) -> None:
+    print()
+    print(_c(f"-- {title} ".ljust(78, "-"), _BOLD))
 
 
-def run_demo_scenario(name: str, scenario: dict):
-    """Run one demo scenario with all methods."""
-    print_section(name)
-
-    v1_sentences = scenario["v1"]
-    v2_sentences = scenario["v2"]
-
-    print_sentences("V1 (Original)", v1_sentences)
-    print_sentences("V2 (Revised)", v2_sentences)
-
-    print(f"\n💡 What to notice: {scenario['what_to_notice']}")
-
-    # Get embeddings
-    embeddings = get_smart_mock_embeddings(v1_sentences + v2_sentences)
-
-    # Run each method
-    print("\n" + "-" * 80)
-
-    # Method 1: Lexical
-    try:
-        result_lexical = lexical_hungarian(v1_sentences, v2_sentences, threshold=0.3)
-        print_result("Lexical (TF-IDF)", result_lexical)
-    except Exception as e:
-        print(f"\n--- LEXICAL ---\nError: {e}")
-
-    print("\n" + "-" * 80)
-
-    # Method 2: Semantic
-    try:
-        result_semantic = semantic_hungarian(v1_sentences, v2_sentences, embeddings, threshold=0.6)
-        print_result("Semantic (Embeddings)", result_semantic)
-    except Exception as e:
-        print(f"\n--- SEMANTIC ---\nError: {e}")
-
-    print("\n" + "-" * 80)
-
-    # Method 3: Greedy with merges
-    try:
-        result_greedy = greedy_with_merges(v1_sentences, v2_sentences, embeddings)
-        print_result("Greedy with Merge Detection", result_greedy)
-    except Exception as e:
-        print(f"\n--- GREEDY ---\nError: {e}")
-
-    input("\n⏎ Press ENTER to continue to next scenario...")
+def _print_clauses(label: str, clauses, max_text: int = 70) -> None:
+    print(_c(label, _BOLD))
+    if not clauses:
+        print(_c("  (none)", _DIM))
+        return
+    for c in clauses:
+        col = _COLOR_BY_CLASS.get(c.classification, _RESET)
+        partner = c.paired_with or "----"
+        text = c.text[:max_text] + ("..." if len(c.text) > max_text else "")
+        line = f"  {c.id} -> {partner}  "
+        line += _c(f"{c.classification:9s}", col)
+        line += f"  drift={c.drift_score:6.2f}  {text}"
+        print(line)
 
 
-def main():
-    """Run all demo scenarios."""
-    print("""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                    SEMANTIC DIFF - ALIGNMENT METHOD DEMO                     ║
-║                                                                              ║
-║  Testing different alignment methods with mock data (no API keys needed!)   ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+def _print_pairs(pairs) -> None:
+    print(_c("hover-connector pairs (kept after split):", _BOLD))
+    if not pairs:
+        print(_c("  (none)", _DIM))
+        return
+    for p in pairs:
+        col = _COLOR_BY_CLASS.get(p.classification, _RESET)
+        line = f"  {p.before_id} <-> {p.after_id}  sim={p.similarity:.3f}  drift={p.drift_score:6.2f}  "
+        line += _c(p.classification, col)
+        print(line)
 
-This demo shows:
-- How lexical (TF-IDF) vs semantic (embeddings) alignment differs
-- When pure Hungarian fails (merging/splitting)
-- How different methods handle edge cases
 
-Note: Using SMART MOCK embeddings (word-overlap based).
-      Real embeddings (OpenAI/sentence-transformers) will be more accurate.
-""")
+def _print_summary(summary) -> None:
+    print(_c("summary:", _BOLD))
+    s = summary
+    print(f"  before/after counts:   {s.before_count} / {s.after_count}")
+    counts_line = (
+        _c(f"{s.unchanged} unchanged", _GREEN)
+        + ", "
+        + _c(f"{s.modified} modified", _YELLOW)
+        + ", "
+        + _c(f"{s.added} added", _BLUE)
+        + ", "
+        + _c(f"{s.removed} removed", _RED)
+    )
+    print(f"  classifications:       {counts_line}")
+    print(f"  overall drift:         {s.overall_drift:6.2f}  (length-weighted, 0-100)")
+    print(f"  pct text edited:       {s.pct_text_edited:6.2f}  (Levenshtein)")
+    print(f"  pct meaning edited:    {s.pct_meaning_edited:6.2f}")
+    print(_c(f"  models: {s.embedding_model} + {s.chat_model} | alignment={s.alignment} | {s.elapsed_ms} ms", _DIM))
 
-    input("Press ENTER to start...")
 
-    # Run each scenario
-    for name, scenario in DEMO_SCENARIOS.items():
-        run_demo_scenario(name, scenario)
+def _print_concepts(concepts, status: str) -> None:
+    label = f"concepts ({len(concepts)}, status={status}):"
+    print(_c(label, _BOLD))
+    if not concepts:
+        print(_c("  (none)", _DIM))
+        return
+    for c in concepts:
+        evidence = c.evidence[:60] + ("..." if len(c.evidence) > 60 else "")
+        print(f"  [{c.status:13s}] {c.name}")
+        print(_c(f'    "{evidence}"', _DIM))
 
-    # Final summary
-    print_section("DEMO COMPLETE")
-    print("""
-Key Takeaways:
 
-1. LEXICAL vs SEMANTIC:
-   - Lexical works when words overlap (light edits)
-   - Semantic works even with heavy paraphrasing
-   - → Use semantic for real-world use cases
+def render(result: DiffResponse) -> None:
+    _print_section("before clauses")
+    _print_clauses("", result.before_clauses)
 
-2. PURE HUNGARIAN LIMITATION:
-   - Can't detect 2→1 or 1→2 merges/splits
-   - Shows as 1 match + 1 addition/deletion
-   - → Use greedy with merges if this matters for your demo
+    _print_section("after clauses")
+    _print_clauses("", result.after_clauses)
 
-3. NEXT STEPS:
-   - Replace mock embeddings with real API (OpenAI/sentence-transformers)
-   - Run: python run_experiments.py --methods all --test-cases all
-   - Pick your method based on results
+    _print_section("pairs")
+    _print_pairs(result.pairs)
 
-For Nickolas: See ml/NICKOLAS_README.md for full analysis and recommendations.
-""")
+    _print_section("summary")
+    _print_summary(result.summary)
+
+    _print_section("concepts")
+    _print_concepts(result.concepts, result.concept_extraction)
+
+
+# ---------- Entry point -----------------------------------------------------
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Run the ML diff pipeline end-to-end.")
+    p.add_argument(
+        "--mock",
+        action="store_true",
+        help="Use deterministic mock embeddings + concepts. No API keys needed.",
+    )
+    p.add_argument(
+        "--before",
+        default=SAMPLE_BEFORE,
+        help="Original document text. Defaults to the canned sample.",
+    )
+    p.add_argument(
+        "--after",
+        default=SAMPLE_AFTER,
+        help="Revised document text. Defaults to the canned sample.",
+    )
+    return p.parse_args()
+
+
+async def _run(args: argparse.Namespace) -> int:
+    if args.mock:
+        _install_mocks()
+        print(_c("[mock mode — no OpenAI calls]", _GREY))
+    else:
+        if not os.getenv("OPENAI_API_KEY"):
+            print(
+                _c(
+                    "OPENAI_API_KEY not set. Re-run with --mock for an offline demo.",
+                    _RED,
+                ),
+                file=sys.stderr,
+            )
+            return 2
+        print(_c("[live mode — real OpenAI calls]", _GREY))
+
+    print()
+    print(_c("BEFORE:", _BOLD), args.before[:200] + ("..." if len(args.before) > 200 else ""))
+    print(_c("AFTER: ", _BOLD), args.after[:200] + ("..." if len(args.after) > 200 else ""))
+
+    result = await pipeline_mod.run_diff(args.before, args.after)
+    render(result)
+    return 0
+
+
+def main() -> int:
+    return asyncio.run(_run(_parse_args()))
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -1,11 +1,19 @@
 """
-Edge case test data for alignment experiments.
+Edge case fixture corpus for alignment + threshold tuning.
 
-Each test case has:
-- v1_sentences: Original version
-- v2_sentences: Revised version
-- expected_behavior: What should happen
-- difficulty: How challenging for alignment algorithms
+Cherry-picked from origin/main:ml/test_cases.py (Winston). 14 hand-built
+cases spanning paraphrase, merging, splitting, reordering, additions,
+deletions, identical, complete rewrite, and empty inputs.
+
+Used by:
+- The threshold-tuning sprint (ML_ARCHITECTURE.md §7) once real
+  embeddings are flowing.
+- Future regression tests against `align()` once Winston's algorithm
+  is wired in via `backend/services/align.py`.
+
+NOT a pytest module — `pytest.ini` collects only `tests/`. The file's
+lower-case `test_*` prefix is incidental; the module exposes the
+`TEST_CASES` dict + helpers, no pytest functions.
 """
 
 TEST_CASES = {
