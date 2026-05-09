@@ -28,7 +28,7 @@ from ml.concepts import extract_concepts
 from ml.embeddings import embed_clauses
 from ml.metrics import aggregate_metrics
 from ml.scoring import score_pairs
-from ml.thresholds import FULL_DRIFT
+from ml.thresholds import ALIGNMENT_PRE_PRUNES, FULL_DRIFT
 
 
 async def run_diff(before: str, after: str) -> DiffResponse:
@@ -54,7 +54,9 @@ async def run_diff(before: str, after: str) -> DiffResponse:
 
     # Score and classify the alignment.
     scored = score_pairs(alignment.pairs, embeddings)
-    kept_pairs, split_clauses = classify_pairs(scored)
+    kept_pairs, split_clauses = classify_pairs(
+        scored, split_below_threshold=not ALIGNMENT_PRE_PRUNES
+    )
     unmatched_classified = classify_unmatched(
         alignment.unmatched_before, alignment.unmatched_after
     )

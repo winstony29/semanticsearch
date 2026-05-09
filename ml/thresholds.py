@@ -48,3 +48,18 @@ MAX_CONCEPT_INPUT_CHARS: int = 60_000
 # split-off from a low-similarity Hungarian pair. Treated as "fully drifted"
 # because there is nothing to compare against.
 FULL_DRIFT: float = 100.0
+
+
+# ---- Alignment integration flag --------------------------------------------
+
+# Set to True when the upstream alignment step (e.g. Winston's
+# `_run_hungarian_with_threshold` with a `match_threshold`) has already
+# pre-pruned low-similarity pairs into the unmatched lists. When True, the
+# post-Hungarian split inside `classify_pairs` is suppressed to avoid
+# double-pruning — borderline pairs reach classification and become
+# `modified` instead of being split into removed+added.
+#
+# Default False because the current `align()` delegates to `_mock_align`,
+# which does not pre-prune. Flip to True the moment a real alignment that
+# pre-prunes is wired up in `backend/services/align.py`.
+ALIGNMENT_PRE_PRUNES: bool = False
