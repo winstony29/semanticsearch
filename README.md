@@ -249,12 +249,23 @@ THRESHOLD_YELLOW = 0.60  # Moderate drift
 Currently using: `claude-sonnet-4-20250514`
 - Fallback: GPT-4o-mini
 
+## 🔧 Quick Fixes to Get Working
+
+**See `FIXES_NEEDED.md` for detailed list of all stubs**
+
+**Critical path (30 minutes):**
+1. Fix ML embeddings (`ml/semantic_engine.py:65`) - Copy from `QUICK_FIXES/fix1_embeddings_openai.py`
+2. Wire backend to ML (`backend/services/ml_client.py:11`) - Copy from `QUICK_FIXES/fix2_backend_integration.py`
+3. Add async explanations (`backend/routes/compare.py:10`) - Copy from `QUICK_FIXES/fix3_async_explanations.py`
+
+**All code is copy-paste ready in `QUICK_FIXES/` folder!**
+
 ## 📝 Notes
 
-- Mock ML results are currently returned from `backend/services/ml_client.py`
-- Replace the `_mock_ml_result()` function once real ML pipeline is ready
+- Mock ML results are currently returned from `backend/services/ml_client.py` → **Fix with QUICK_FIXES/fix2**
+- Mock embeddings in `ml/semantic_engine.py` → **Fix with QUICK_FIXES/fix1**
 - Frontend components have basic structure but need CSS styling
-- Async explanation generation is stubbed (TODO in `routes/compare.py`)
+- Async explanation generation is stubbed → **Fix with QUICK_FIXES/fix3**
 
 ## 🎉 Demo
 
