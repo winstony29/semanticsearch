@@ -89,9 +89,13 @@ def semantic_hungarian(v1_sentences: List[str], v2_sentences: List[str],
         sim_matrix, v1_sentences, v2_sentences, threshold, method="semantic"
     )
 
+    # Compute summary
+    summary = _compute_summary(pairs)
+
     return {
         "method": "semantic_hungarian",
         "pairs": pairs,
+        "summary": summary,
         "similarity_matrix": sim_matrix
     }
 
@@ -203,6 +207,7 @@ def greedy_with_merges(v1_sentences: List[str], v2_sentences: List[str],
                     "v2_index": j,
                     "similarity_score": float(score),
                     "status": "merged",
+                    "severity": _classify_severity(score),
                     "note": "Multiple v2 sentences merged with same v1"
                 })
                 v2_matched.add(j)
@@ -219,6 +224,7 @@ def greedy_with_merges(v1_sentences: List[str], v2_sentences: List[str],
                     "v2_index": j,
                     "similarity_score": float(score),
                     "status": "split",
+                    "severity": _classify_severity(score),
                     "note": "v1 sentence split across multiple v2 sentences"
                 })
                 v1_matched.add(i)
@@ -233,7 +239,8 @@ def greedy_with_merges(v1_sentences: List[str], v2_sentences: List[str],
                 "v1_index": i,
                 "v2_index": j,
                 "similarity_score": float(score),
-                "status": "matched"
+                "status": "matched",
+                "severity": _classify_severity(score)
             })
             v1_matched.add(i)
             v2_matched.add(j)
@@ -248,7 +255,8 @@ def greedy_with_merges(v1_sentences: List[str], v2_sentences: List[str],
                 "v1_index": None,
                 "v2_index": j,
                 "similarity_score": 0.0,
-                "status": "added"
+                "status": "added",
+                "severity": "added"
             })
 
     for i in range(len(v1_sentences)):
@@ -260,12 +268,17 @@ def greedy_with_merges(v1_sentences: List[str], v2_sentences: List[str],
                 "v1_index": i,
                 "v2_index": None,
                 "similarity_score": 0.0,
-                "status": "deleted"
+                "status": "deleted",
+                "severity": "deleted"
             })
+
+    # Compute summary
+    summary = _compute_summary(pairs)
 
     return {
         "method": "greedy_with_merges",
         "pairs": pairs,
+        "summary": summary,
         "similarity_matrix": sim_matrix
     }
 
@@ -309,12 +322,99 @@ def adaptive_hungarian(v1_sentences: List[str], v2_sentences: List[str],
         result["quality"] = overall_quality
 
     result["method"] = "adaptive_hungarian"
+
+    # Normalize output (convert merged/split to matched with raw_status)
+    result = normalize_output(result)
+
+    # Add quality warning if needed
+    result = add_quality_warning(result)
+
     return result
 
 
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
+
+def _classify_severity(score: float) -> str:
+    """
+    Standardized severity classification across all methods.
+
+    - green: score >= 0.85
+    - yellow: 0.60 <= score < 0.85
+    - red: score < 0.60
+    """
+    if score >= 0.85:
+        return "green"
+    elif score >= 0.60:
+        return "yellow"
+    else:
+        return "red"
+
+
+def normalize_output(result: Dict) -> Dict:
+    """
+    Normalize alignment output for frontend consumption.
+
+    - Converts status="merged" and status="split" to status="matched"
+    - Preserves original status in raw_status field
+    - Ensures frontend only sees: "matched" | "added" | "deleted"
+    """
+    normalized_pairs = []
+
+    for pair in result["pairs"]:
+        normalized_pair = pair.copy()
+
+        # If status is merged or split, normalize it
+        if pair["status"] in ["merged", "split"]:
+            normalized_pair["raw_status"] = pair["status"]
+            normalized_pair["status"] = "matched"
+
+        normalized_pairs.append(normalized_pair)
+
+    result["pairs"] = normalized_pairs
+    return result
+
+
+def add_quality_warning(result: Dict) -> Dict:
+    """
+    Add warning if documents appear largely unrelated.
+
+    If overall_score < 0.3, adds warning field to response.
+    """
+    summary = result.get("summary", {})
+    overall_score = summary.get("overall_score", 0.0)
+
+    if overall_score < 0.3:
+        result["warning"] = "Documents appear largely unrelated."
+
+    return result
+
+
+def _compute_summary(pairs: List[Dict]) -> Dict:
+    """Compute document-level summary statistics."""
+    matched = [p for p in pairs if p["status"] in ["matched", "merged", "split"]]
+    green = sum(1 for p in matched if p.get("severity") == "green")
+    yellow = sum(1 for p in matched if p.get("severity") == "yellow")
+    red = sum(1 for p in matched if p.get("severity") == "red")
+    added = sum(1 for p in pairs if p["status"] == "added")
+    deleted = sum(1 for p in pairs if p["status"] == "deleted")
+
+    overall_score = (
+        sum(p["similarity_score"] for p in matched) / len(matched)
+        if matched else 0.0
+    )
+
+    return {
+        "overall_score": overall_score,
+        "total_pairs": len(matched),
+        "green_count": green,
+        "yellow_count": yellow,
+        "red_count": red,
+        "added_count": added,
+        "deleted_count": deleted
+    }
+
 
 def _run_hungarian_with_threshold(sim_matrix: np.ndarray,
                                    v1_sentences: List[str],
@@ -329,7 +429,7 @@ def _run_hungarian_with_threshold(sim_matrix: np.ndarray,
 
     # Pad to square
     max_dim = max(n, m)
-    padded_cost = np.full((max_dim, max_dim), 1.0)  # High cost for dummy matches
+    padded_cost = np.full((max_dim, max_dim), 10.0)  # High cost for dummy matches
     padded_cost[:n, :m] = cost_matrix
 
     # Run Hungarian
@@ -350,7 +450,8 @@ def _run_hungarian_with_threshold(sim_matrix: np.ndarray,
                     "v1_index": i,
                     "v2_index": j,
                     "similarity_score": float(score),
-                    "status": "matched"
+                    "status": "matched",
+                    "severity": _classify_severity(score)
                 })
                 pair_id += 1
             else:
@@ -362,7 +463,8 @@ def _run_hungarian_with_threshold(sim_matrix: np.ndarray,
                     "v1_index": i,
                     "v2_index": None,
                     "similarity_score": 0.0,
-                    "status": "deleted"
+                    "status": "deleted",
+                    "severity": "deleted"
                 })
                 pairs.append({
                     "pair_id": f"add_{pair_id:03d}",
@@ -371,7 +473,8 @@ def _run_hungarian_with_threshold(sim_matrix: np.ndarray,
                     "v1_index": None,
                     "v2_index": j,
                     "similarity_score": 0.0,
-                    "status": "added"
+                    "status": "added",
+                    "severity": "added"
                 })
                 pair_id += 1
 
@@ -384,7 +487,8 @@ def _run_hungarian_with_threshold(sim_matrix: np.ndarray,
                 "v1_index": None,
                 "v2_index": j,
                 "similarity_score": 0.0,
-                "status": "added"
+                "status": "added",
+                "severity": "added"
             })
             pair_id += 1
 
@@ -397,7 +501,8 @@ def _run_hungarian_with_threshold(sim_matrix: np.ndarray,
                 "v1_index": i,
                 "v2_index": None,
                 "similarity_score": 0.0,
-                "status": "deleted"
+                "status": "deleted",
+                "severity": "deleted"
             })
             pair_id += 1
 
