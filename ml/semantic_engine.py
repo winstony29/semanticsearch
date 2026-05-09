@@ -1,33 +1,31 @@
 """
-Semantic comparison engine using embeddings and Hungarian alignment.
+Semantic comparison engine using embeddings and adaptive Hungarian alignment.
 
 This is Nickolas's domain - the ML pipeline for semantic diff.
 """
 
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-from scipy.optimize import linear_sum_assignment
 import os
 from typing import Optional
+from openai import OpenAI
+from dotenv import load_dotenv
 
-# Configuration constants
-THRESHOLD_GREEN = 0.85
-THRESHOLD_YELLOW = 0.60
-EMBEDDING_MODEL = "text-embedding-3-small"
-PADDING_PENALTY = 1.0
+# Load environment variables
+load_dotenv()
+
+# Import alignment methods
+from alignment_methods import adaptive_hungarian
 
 
 def compare_sentences(v1_sentences: list[str], v2_sentences: list[str]) -> dict:
     """
-    Main pipeline: align and score sentence pairs.
+    Main pipeline: align and score sentence pairs using adaptive Hungarian.
 
-    Steps:
-    1. Embed all sentences in one batch
-    2. Compute similarity matrix
-    3. Run Hungarian algorithm for optimal alignment
-    4. Classify pairs by severity
-    5. Detect additions and deletions
-    6. Compute summary statistics
+    Uses adaptive_hungarian which:
+    - Tries semantic_hungarian first (handles reordering, simple edits)
+    - Falls back to greedy_with_merges if quality < 0.5 (handles merges/splits)
+    - Normalizes output (converts merged/split to matched with raw_status)
+    - Adds quality warning if overall_score < 0.3
 
     Returns:
         Dict with 'pairs' and 'summary' matching MLResult schema
@@ -42,146 +40,36 @@ def compare_sentences(v1_sentences: list[str], v2_sentences: list[str]) -> dict:
     if not v2_sentences:
         return _all_deletions(v1_sentences)
 
-    # Step 1: Get embeddings
+    # Get embeddings for all sentences
     embeddings = _get_embeddings(v1_sentences + v2_sentences)
-    emb_v1 = embeddings[:len(v1_sentences)]
-    emb_v2 = embeddings[len(v1_sentences):]
 
-    # Step 2: Compute similarity matrix
-    sim_matrix = cosine_similarity(emb_v1, emb_v2)
+    # Use adaptive Hungarian alignment
+    result = adaptive_hungarian(v1_sentences, v2_sentences, embeddings, quality_threshold=0.5)
 
-    # Step 3: Hungarian algorithm for alignment
-    pairs = _align_with_hungarian(sim_matrix, v1_sentences, v2_sentences)
-
-    # Step 4: Compute summary statistics
-    summary = _compute_summary(pairs)
-
+    # Return just pairs and summary (remove internal fields)
     return {
-        "pairs": pairs,
-        "summary": summary
+        "pairs": result["pairs"],
+        "summary": result["summary"],
+        "warning": result.get("warning")  # Include warning if present
     }
 
 
 def _get_embeddings(sentences: list[str]) -> np.ndarray:
     """
-    Get embeddings for all sentences in a single batch.
+    Get embeddings for all sentences using OpenAI text-embedding-3-small.
 
-    TODO: Implement actual embedding call
-    - Option 1: OpenAI text-embedding-3-small
-    - Option 2: sentence-transformers locally (all-MiniLM-L6-v2)
+    Requires: OPENAI_API_KEY in environment
+    Cost: ~$0.00002 per 1000 tokens (very cheap)
     """
-    # Mock implementation - returns random embeddings
-    # Replace with actual embedding API call
-    return np.random.rand(len(sentences), 384)  # 384-dim for all-MiniLM
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-
-def _align_with_hungarian(
-    sim_matrix: np.ndarray,
-    v1_sentences: list[str],
-    v2_sentences: list[str]
-) -> list[dict]:
-    """
-    Use Hungarian algorithm to find optimal 1:1 sentence alignment.
-
-    Returns list of aligned pairs plus additions/deletions.
-    """
-    n, m = sim_matrix.shape
-    cost_matrix = 1 - sim_matrix
-
-    # Pad to square matrix
-    max_dim = max(n, m)
-    padded_cost = np.full((max_dim, max_dim), PADDING_PENALTY)
-    padded_cost[:n, :m] = cost_matrix
-
-    # Run Hungarian algorithm
-    row_ind, col_ind = linear_sum_assignment(padded_cost)
-
-    pairs = []
-    pair_id = 0
-
-    # Process matched pairs
-    for i, j in zip(row_ind, col_ind):
-        if i < n and j < m:
-            # Valid match
-            score = sim_matrix[i, j]
-            severity = _classify_severity(score)
-
-            pairs.append({
-                "pair_id": f"pair_{pair_id:03d}",
-                "v1_sentence": v1_sentences[i],
-                "v2_sentence": v2_sentences[j],
-                "v1_index": i,
-                "v2_index": j,
-                "similarity_score": float(score),
-                "status": "matched",
-                "severity": severity
-            })
-            pair_id += 1
-
-        elif i >= n:
-            # Addition (v2-only)
-            pairs.append({
-                "pair_id": f"pair_add_{pair_id:03d}",
-                "v1_sentence": None,
-                "v2_sentence": v2_sentences[j],
-                "v1_index": None,
-                "v2_index": j,
-                "similarity_score": 0.0,
-                "status": "added",
-                "severity": "added"
-            })
-            pair_id += 1
-
-        elif j >= m:
-            # Deletion (v1-only)
-            pairs.append({
-                "pair_id": f"pair_del_{pair_id:03d}",
-                "v1_sentence": v1_sentences[i],
-                "v2_sentence": None,
-                "v1_index": i,
-                "v2_index": None,
-                "similarity_score": 0.0,
-                "status": "deleted",
-                "severity": "deleted"
-            })
-            pair_id += 1
-
-    return pairs
-
-
-def _classify_severity(score: float) -> str:
-    """Classify similarity score into severity level."""
-    if score >= THRESHOLD_GREEN:
-        return "green"
-    elif score >= THRESHOLD_YELLOW:
-        return "yellow"
-    else:
-        return "red"
-
-
-def _compute_summary(pairs: list[dict]) -> dict:
-    """Compute document-level summary statistics."""
-    matched = [p for p in pairs if p["status"] == "matched"]
-    green = sum(1 for p in matched if p["severity"] == "green")
-    yellow = sum(1 for p in matched if p["severity"] == "yellow")
-    red = sum(1 for p in matched if p["severity"] == "red")
-    added = sum(1 for p in pairs if p["status"] == "added")
-    deleted = sum(1 for p in pairs if p["status"] == "deleted")
-
-    overall_score = (
-        sum(p["similarity_score"] for p in matched) / len(matched)
-        if matched else 0.0
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=sentences
     )
 
-    return {
-        "overall_score": overall_score,
-        "total_pairs": len(matched),
-        "green_count": green,
-        "yellow_count": yellow,
-        "red_count": red,
-        "added_count": added,
-        "deleted_count": deleted
-    }
+    embeddings = np.array([d.embedding for d in response.data])
+    return embeddings
 
 
 def _empty_result() -> dict:
