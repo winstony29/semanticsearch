@@ -371,7 +371,11 @@ class DiffResponse(BaseModel):
 - `before_clauses` and `after_clauses` are what the frontend iterates to render the two columns. Each is self-contained.
 - `pairs` is a relational view used for hover connectors. Frontend builds a Map keyed by either side's id.
 - The redundancy between the three lists is intentional and small (~30% bytes) — pays for itself in frontend simplicity.
-- Merged clauses (one v2 clause paired with two v1 clauses) are **not represented** in this schema. If the backend lead's Hungarian-with-merging produces them, decide between (a) extend `paired_with` to be `Optional[str | list[str]]`, or (b) add a fifth `Classification = "merged"`. Defer the decision until merging actually appears in test output.
+- **Merged / split clauses (resolved 2026-05-09).** When the backend lead's Hungarian-with-merging produces N:1 (multiple before clauses → one after clause) or 1:N (one before clause → multiple after clauses) relationships, `paired_with` is `Optional[str | list[str]]`:
+  - `None` → unmatched / split-off / unpaired (the standard "added" or "removed" case)
+  - `str` → standard 1:1 pairing (the overwhelmingly common case)
+  - `list[str]` → N:1 merge or 1:N split — this clause maps to multiple partners on the other side
+  - The classification ladder stays at four states (`unchanged / modified / added / removed`); a merged clause is just a `modified` clause with a list-valued `paired_with`. Frontend handles via `Array.isArray(paired_with)`. `PairRendering` entries are still 1:1 — emit one entry per pairwise relationship (so a 2:1 merge yields two `PairRendering` rows pointing at the same `after_id`).
 
 ---
 

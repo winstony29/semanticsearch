@@ -136,9 +136,16 @@ class ClauseRendering(BaseModel):
     text: str
     classification: Classification
     drift_score: float = Field(..., ge=0, le=100)
-    paired_with: Optional[str] = Field(
+    paired_with: Optional[str | list[str]] = Field(
         None,
-        description="id of partner on the other side, or None if unmatched/split",
+        description=(
+            "id of partner on the other side. "
+            "None ⇒ unmatched / split-off / unpaired. "
+            "str ⇒ standard 1:1 pairing (the common case). "
+            "list[str] ⇒ N:1 merge or 1:N split — this clause maps to "
+            "multiple partners on the other side. Frontend should "
+            "Array.isArray() check before using."
+        ),
     )
 
 
