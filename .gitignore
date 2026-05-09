@@ -15,6 +15,7 @@ build/
 # Environment variables
 .env
 .env.local
+backend/.env
 
 # IDEs
 .vscode/
@@ -55,3 +56,6 @@ htmlcov/
 
 # spaCy
 *.spacy
+
+# Nick
+.claude/
