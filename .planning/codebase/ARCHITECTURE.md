@@ -4,143 +4,140 @@
 
 ## Pattern Overview
 
-**Overall:** Layered FastAPI backend with an async ML pipeline as the core domain. Two coexisting contract flows: legacy `/compare` (sentence-based, mocked) and new `/api/diff` (clause-based, Hungarian-aligned).
+**Overall:** Layered async pipeline for semantic document comparison — FastAPI backend + React/TypeScript frontend, with a clean ML slice (`ml/`) sitting behind a backend-owned alignment seam.
 
 **Key Characteristics:**
-- Stateless request handling (no DB, no per-request cache)
-- ML pipeline is async + embarrassingly parallel (`asyncio.gather` for embeddings + concept extraction)
-- Locked data contract in Pydantic schemas, shared across layers
-- All tunable constants centralized in one file (`ml/thresholds.py`)
+- Async-first ML pipeline: `asyncio.gather()` parallelizes embeddings + concept extraction (`ml/pipeline.py`)
+- Staged integration seam: mock alignment (`ml/_mock_align.py`) is swappable for real Hungarian algorithm (`backend/services/_align_impl.py`) via `USE_REAL_ALIGN` env flag
+- Dual API contracts: legacy `/compare` (sentence pairs) + new `/api/diff` (clause-based, see `ML_ARCHITECTURE.md`)
+- Best-effort concept extraction: LLM failures degrade gracefully to empty concepts without breaking the diff
+- All ML tuning constants centralized in `ml/thresholds.py`
+- Stateless per request (no DB); in-memory dict for legacy explanation polling only
 
 ## Layers
 
-**API Layer:**
-- Purpose: HTTP entry, CORS, validation, status codes
-- Contains: FastAPI app + route handlers
-- Files: `backend/main.py`, `backend/routes/diff.py`, `backend/routes/compare.py`, `backend/routes/explanation.py`
-- Depends on: Schema layer, service layer, ML pipeline
-- Used by: Frontend, external clients
+**API / Router Layer:** `backend/routes/`
+- Purpose: HTTP routing, request validation, response shaping
+- Contains: `compare.py` (legacy `/compare`), `diff.py` (new `/api/diff`), `explanation.py` (`/explanation/{id}` polling)
+- Depends on: `backend/models/schemas.py`, `backend/services/`, `ml/pipeline.py`
+- Used by: `backend/main.py` (router registration)
 
-**Schema / Contract Layer:**
-- Purpose: Single source of truth for all cross-layer data shapes
-- Contains: Pydantic models — `DiffRequest`, `DiffResponse`, `AlignmentResult`, `ClauseUnit`, `AlignedPair`, `ClauseRendering`, `Concept`, `DiffSummary`, `Classification` literal
-- Files: `backend/models/schemas.py`
-- Depends on: pydantic
-- Used by: every other layer
+**Service / Adapter Layer:** `backend/services/`
+- Purpose: Integration seams, business logic, tokenization
+- Contains: `align.py` (alignment dispatcher), `_align_impl.py` (vendored Winston `semantic_hungarian`), `tokenizer.py` (spaCy + regex fallback), `ml_client.py` (legacy mock bridge)
+- Depends on: `backend/models/schemas.py`, `ml/_mock_align.py`, `ml/embeddings.py` (when real alignment is on)
+- Used by: routes layer + `ml/pipeline.py`
 
-**Service Layer (backend):**
-- Purpose: Bridge between routes and ML pipeline; legacy mock fallbacks
-- Contains:
-  - `backend/services/align.py` — alignment seam (currently delegates to `ml/_mock_align.py`)
-  - `backend/services/ml_client.py` — legacy mock wrapper for `/compare`
-  - `backend/services/tokenizer.py` — spaCy sentence split + naive fallback (legacy)
-- Depends on: schemas, ml modules
-- Used by: routes, pipeline
+**ML Slice Layer:** `ml/`
+- Purpose: Embedding, scoring, classification, concept extraction, orchestration
+- Contains: `embeddings.py`, `scoring.py`, `classification.py`, `concepts.py`, `metrics.py`, `pipeline.py`, `thresholds.py`, `_mock_align.py`
+- Depends on: `backend/models/schemas.py`, `backend/services/align.py`, OpenAI SDK, NumPy
+- Used by: `backend/routes/diff.py` via `ml.pipeline.run_diff()`
 
-**ML Slice (`ml/`):**
-- Purpose: Embeddings → scoring → classification → metrics + concept extraction
-- Files (numbered per pipeline step):
-  - Step 1: `ml/embeddings.py` — AsyncOpenAI batch embed + L2 normalize, tenacity retry
-  - Step 2: `ml/scoring.py` — cosine similarity (`np.dot` on unit vectors) + `cosine_to_drift()` 0–100 remap
-  - Step 3: `ml/classification.py` — threshold-based unchanged/modified/added/removed labelling, splits low-similarity pairs
-  - Step 4: `ml/metrics.py` — aggregates `DiffSummary` (counts, length-weighted overall_drift, Levenshtein `pct_text_edited`)
-  - Step 5: `ml/concepts.py` — `gpt-4o-mini` structured output (`ConceptDiff`); best-effort, returns empty + `"failed"` on error
-  - Step 6: `ml/pipeline.py` — `run_diff(before, after)` orchestrator
-- Depends on: schemas, alignment service, OpenAI SDK, numpy, Levenshtein
-- Used by: route handlers via `ml.pipeline.run_diff`
+**Data / Schema Layer:** `backend/models/schemas.py`
+- Purpose: Single source of truth for all DTOs
+- Contains: Legacy (`CompareRequest`, `SentencePair`, `CompareResponse`) and new (`DiffRequest`, `ClauseUnit`, `AlignedPair`, `AlignmentResult`, `DiffResponse`, `Concept`, `ConceptDiff`) schemas
+- Type literals: `Classification` (unchanged|modified|added|removed), `ConceptStatus` (new|removed|weakened|strengthened|unchanged — `removed` added in current uncommitted change)
+- Used by: every backend module
 
-**Configuration:**
-- Single source of truth: `ml/thresholds.py` (STABLE_THRESHOLD=0.93, MODIFIED_THRESHOLD=0.65, REMOVED_THRESHOLD=0.65, EMBEDDING_MODEL, CHAT_MODEL, FULL_DRIFT=100.0, MAX_CONCEPT_INPUT_CHARS=60_000)
+**Frontend Layer:** `frontend/src/`
+- Purpose: Input panel, side-by-side diff viewer, summary metrics
+- Contains: `App.tsx`, `components/InputPanel.tsx`, `components/DiffViewer.tsx`, `components/SummaryBar.tsx`, `api/client.ts`, `types/api.ts`
 
 ## Data Flow
 
-**POST /api/diff request lifecycle:**
+**`/api/diff` request lifecycle:**
 
-1. Client posts `{before, after}` to `/api/diff` (`backend/routes/diff.py`)
-2. Pydantic validates `DiffRequest` (each side ≤ 20_000 chars, ≥ 1)
-3. Handler calls `ml.pipeline.run_diff(before, after)`
-4. Pipeline calls `align()` (sync) → `AlignmentResult{pairs, unmatched_before, unmatched_after, originals}`
-5. `asyncio.gather` runs in parallel:
-   - Path A — `embed_clauses(alignment)` → `score_pairs()` → `classify_pairs()` → `classify_unmatched()`
-   - Path B — `extract_concepts(before, after)` → `ConceptDiff` (graceful empty on failure)
-6. Pipeline assembles `before_clauses`, `after_clauses`, `pair_renderings`
-7. `aggregate_metrics()` produces `DiffSummary` (timed via `time.perf_counter`)
-8. Returns `DiffResponse{before_clauses, after_clauses, pairs, summary, concepts, status}`
+1. Frontend POST → `frontend/src/components/InputPanel.tsx` → `frontend/src/api/client.ts::compareDocuments()` → `/api/diff` with `{ before, after }` (DiffRequest)
+2. Router `backend/routes/diff.py::diff_documents()` calls `ml.pipeline.run_diff(before, after)`
+3. Alignment: `backend/services/align.py::align()` dispatches to `ml/_mock_align.py::mock_align()` or `_real_align()` based on `USE_REAL_ALIGN`; returns `AlignmentResult` (paired clauses + unmatched lists)
+4. Concurrent (via `asyncio.gather()`):
+   - **Task A** `ml/embeddings.py::embed_clauses()` → OpenAI embeddings, batched + L2-normalized
+   - **Task B** `ml/concepts.py::extract_concepts()` → gpt-4o-mini structured output (or empty `ConceptDiff` on failure)
+5. Synchronous post-processing on embeddings:
+   - `ml/scoring.py::score_pairs()` — cosine similarity → drift remap (0–100)
+   - `ml/classification.py::classify_pairs()` — threshold buckets (unchanged ≥0.93, modified 0.65–0.92, removed <0.65); optional split for low-similarity pairs
+   - `ml/classification.py::classify_unmatched()` — mark added/removed
+6. `ml/metrics.py::aggregate_metrics()` — counts, length-weighted drift, Levenshtein text-edit %, concept_status
+7. `ml/pipeline.py::_build_before_clauses() / _build_after_clauses() / _build_pair_renderings()` — assemble `ClauseRendering` lists and `PairRendering` connectors for UI
+8. Return `DiffResponse` → Frontend `DiffViewer` renders side-by-side with classifications
 
 **State Management:**
-- Stateless — every request rebuilds everything from input text
-- No persistent storage; legacy `/compare` keeps an in-memory `explanation_store` dict (not used by `/api/diff`)
+- Stateless per request for `/api/diff`
+- Legacy `/compare` uses `explanation_store: dict[uuid, state]` in `backend/routes/compare.py` — single-process only
 
 ## Key Abstractions
 
-**ClauseUnit:**
-- Purpose: Atomic unit of text analysis (may span multiple sentences)
-- Examples: `backend/models/schemas.py` — `id` is `b{n}` for before, `a{n}` for after
-- Pattern: Immutable dataclass-like Pydantic model
-
-**AlignedPair / AlignmentResult:**
-- Purpose: Represents the Hungarian alignment between two documents
-- Examples: `backend/models/schemas.py`
-- Pattern: Structural separation — matched pairs vs `unmatched_before` / `unmatched_after`
-
-**ClassifiedPair:**
-- Purpose: AlignedPair + similarity + drift score + `Classification` literal
-- Examples: `ml/classification.py`
-- Pattern: Tagged result (function pure, no I/O)
-
-**Concept / ConceptDiff:**
-- Purpose: Named themes/obligations changing between versions
-- Examples: `backend/models/schemas.py`, `ml/concepts.py`
-- Pattern: LLM structured output via OpenAI `chat.completions.parse`
-
-**DiffResponse:**
-- Purpose: Final response payload
-- Examples: `backend/models/schemas.py`
-- Pattern: Locked schema; frontend types mirror it
+| Abstraction | File | Pattern |
+|---|---|---|
+| `AlignmentResult` | `backend/models/schemas.py` | Contract between `align()` and ML slice |
+| `ClauseUnit` | `backend/models/schemas.py` | Atomic text unit with stable ID (`b0`, `a0`, …) |
+| `DiffResponse` | `backend/models/schemas.py` | Final API response |
+| `align()` | `backend/services/align.py` | Dispatcher (mock ↔ real Hungarian) |
+| `run_diff()` | `ml/pipeline.py` | Top-level orchestrator |
+| `embed_clauses()` | `ml/embeddings.py` | Batched embeddings + tenacity retry |
+| `score_pairs()` | `ml/scoring.py` | Cosine + drift remap |
+| `classify_pairs()` | `ml/classification.py` | Threshold-based bucketing + split |
+| `extract_concepts()` | `ml/concepts.py` | LLM structured-output extraction |
+| `aggregate_metrics()` | `ml/metrics.py` | Summary stats |
+| Thresholds module | `ml/thresholds.py` | Single source of truth for tunables |
 
 ## Entry Points
 
-**HTTP:**
-- Location: `backend/main.py` (FastAPI app + CORS + router includes)
-- Triggers: `uvicorn backend.main:app`
-- Responsibilities: env-var warnings on boot, mount `/`, `/health`, `/compare`, `/api/diff`, `/explanation/{id}`
+**FastAPI app:**
+- Location: `backend/main.py`
+- Triggers: `python backend/main.py` or `uvicorn backend.main:app`
+- Responsibilities: Load `.env`, init FastAPI, register CORS middleware, mount routers (`compare`, `diff`, `explanation`), expose `/health`
 
-**Pipeline:**
-- Location: `ml/pipeline.py:run_diff()`
-- Triggers: route handler call OR CLI demo
-- Responsibilities: orchestrate align → embed/concepts → classify → metrics → assemble
+**Diff endpoint:**
+- Location: `backend/routes/diff.py::diff_documents()`
+- Triggers: `POST /api/diff`
+- Responsibilities: Validate `DiffRequest`, call `run_diff()`, catch exceptions → `HTTPException(500)`
 
-**CLI Demo:**
-- Location: `ml/demo.py`
-- Triggers: `python -m ml.demo` with optional `--mock`, `--before`, `--after`
-- Responsibilities: deterministic offline validation; monkey-patches embeddings + concepts when `--mock` set
+**Pipeline orchestrator:**
+- Location: `ml/pipeline.py::run_diff()`
+- Triggers: Invoked by diff route
+- Responsibilities: Align → embeddings + concepts (parallel) → score → classify → metrics → assemble response
+
+**Frontend:**
+- Location: `frontend/src/main.tsx` → `frontend/src/App.tsx`
+- Triggers: Browser load on `http://localhost:5173`
+- Responsibilities: Render `InputPanel` ↔ `DiffViewer`; manage compare result state
 
 ## Error Handling
 
-**Strategy:** Graceful degradation in ML slice, generic 500 at HTTP boundary.
+**Strategy:** Layered defensive handling — retry at the boundary, graceful degradation in best-effort steps, generic 500s at the route boundary.
 
 **Patterns:**
-- `ml/embeddings.py` — tenacity decorator, raises after 6 failed attempts
-- `ml/concepts.py` — broad try/except, logs to stderr, returns empty `ConceptDiff` + `status="failed"` (never breaks pipeline)
-- `backend/routes/diff.py:14-20` — try/except around `run_diff`, raises `HTTPException(500, detail=...)`
-- `backend/main.py:21-30` — env-var warnings at boot (does NOT block startup)
+- Tenacity retry on OpenAI errors (`ml/embeddings.py`): 6 attempts with exponential backoff for `(RateLimitError, APIConnectionError, APIStatusError)`. **Retry exhaustion is not caught** — propagates up
+- Concept extraction wraps everything in `except Exception` (`ml/concepts.py`) and returns `ConceptDiff(status="failed")` so the pipeline keeps going
+- Pipeline-level catch in `ml/pipeline.py` for concept failures only
+- Route-level `except Exception` in `backend/routes/diff.py` returns `HTTPException(500, detail=...)`
+- Pydantic auto-422 on schema validation failures
+- Tokenizer falls back from spaCy → regex via bare `except:` (broad — flagged in CONCERNS.md)
 
 ## Cross-Cutting Concerns
 
+**Configuration:**
+- `.env` via python-dotenv (`backend/main.py`)
+- Tunables in `ml/thresholds.py`: `STABLE_THRESHOLD`, `MODIFIED_THRESHOLD`, `REMOVED_THRESHOLD`, `DRIFT_FLOOR`, `DRIFT_CEIL`, `EMBEDDING_MODEL`, `CHAT_MODEL`, `MAX_CONCEPT_INPUT_CHARS`, `ALIGNMENT_PRE_PRUNES`
+
 **Logging:**
-- `print(..., file=sys.stderr)` only; no `logging` module use
+- `print(..., file=sys.stderr)` only — no `logging` module
+- Warnings at startup for missing env vars (`backend/main.py`)
+- Tokenizer warns when spaCy unavailable
 
 **Validation:**
-- Pydantic on request boundary (DiffRequest length bounds)
-- Defensive clamps inside ML (`max(-1.0, min(1.0, sim))` in scoring)
-- Empty/whitespace clauses replaced with single space before OpenAI call
+- Pydantic at API boundary (`backend/models/schemas.py`)
+- Input size cap: `max_length=20_000` per side on `DiffRequest`
+- Defensive cap inside concept extraction: 60_000 chars per side
 
-**Concurrency:**
-- `AsyncOpenAI` clients
-- `asyncio.gather(embed_task, concept_task)` for embarrassingly parallel ML work
+**Auth:**
+- None
 
-**CORS:**
-- Permissive by default (`allow_methods=["*"]`, `allow_headers=["*"]`); origin list from `CORS_ORIGINS` env
+**Async Wiring:**
+- ML pipeline functions are async where I/O-bound (embeddings, concepts), sync where pure compute (scoring, classification, metrics)
+- `asyncio.gather()` parallelizes the two LLM-bound steps in `run_diff()`
 
 ---
 

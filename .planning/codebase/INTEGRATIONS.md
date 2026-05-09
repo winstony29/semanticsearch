@@ -4,79 +4,107 @@
 
 ## APIs & External Services
 
-**Embeddings & LLM:**
-- OpenAI - `text-embedding-3-small` for clause embeddings, `gpt-4o-mini` for concept extraction
-  - SDK/Client: `openai` 1.54.3 (AsyncOpenAI)
-  - Used in: `ml/embeddings.py` (batch embed + L2 normalize), `ml/concepts.py` (structured output via `chat.completions.parse`)
-  - Auth: `OPENAI_API_KEY` env var (no explicit pass; SDK reads env)
-  - Resilience: tenacity retry decorator in `ml/embeddings.py` — `wait_random_exponential(min=1, max=30)`, 6 attempts, retries on `RateLimitError`/`APIConnectionError`/`APIStatusError`
+**OpenAI (Primary, active):**
+- Used for embeddings (`text-embedding-3-small`) and concept extraction (`gpt-4o-mini`)
+- SDK: `openai==1.54.3` (AsyncOpenAI client)
+- Auth: `OPENAI_API_KEY` env var (loaded from `backend/.env`)
+- Embedding call: `ml/embeddings.py` — `AsyncOpenAI().embeddings.create(...)`, batched with L2 normalization
+- Concept extraction call: `ml/concepts.py` — `AsyncOpenAI().chat.completions.parse(...)` with structured `ConceptDiff` schema
+- Retry strategy: `tenacity` exponential backoff, `stop_after_attempt(6)` on `RateLimitError`, `APIConnectionError`, `APIStatusError` (`ml/embeddings.py`)
+- Input cap: 60,000 chars per side for concept extraction (`MAX_CONCEPT_INPUT_CHARS` in `ml/thresholds.py`)
 
-**Anthropic (planned, not yet wired):**
-- Anthropic - `claude-sonnet-*` for diff explanations
-  - SDK/Client: `anthropic` 0.39.0 (declared in `backend/requirements.txt`)
-  - Auth: `ANTHROPIC_API_KEY` env var (read in `backend/main.py:24`, key validation only)
-  - Status: imported but no call site found; explanation flow stub at `backend/routes/compare.py:168` (TODO)
+**Anthropic (Reserved, not integrated):**
+- SDK installed (`anthropic==0.39.0`) but no code path uses it yet
+- Auth env var declared: `ANTHROPIC_API_KEY` (in `backend/.env.example`)
+- Intended for explanation generation per `README.md`, currently unimplemented
 
 ## Data Storage
 
 **Databases:**
-- None — fully stateless
+- None — no persistent database
+- All embeddings computed on-the-fly per request
+
+**Vector Stores:**
+- None — no Pinecone / Weaviate / Qdrant / Chroma / FAISS detected
+- Cosine similarity computed in-process via NumPy dot products (`ml/scoring.py`)
 
 **File Storage:**
 - None
+- `test_data/` holds sample input documents for manual testing only
 
 **Caching:**
-- In-memory only: `explanation_store = {}` dict at module scope in `backend/routes/compare.py:14` (legacy `/compare` flow)
+- None — no Redis, no in-memory cache layer
+
+**In-process state:**
+- Explanation polling store: `backend/routes/compare.py` defines `explanation_store` as a Python dict keyed by UUID `comparison_id`
+- Lost on restart; not safe for multi-process deployment
 
 ## Authentication & Identity
 
 **Auth Provider:**
-- None — no user auth on API endpoints
+- None — no JWT, OAuth, session, or per-user auth
+- API keys (`OPENAI_API_KEY`, future `ANTHROPIC_API_KEY`) are shared service credentials, not per-user
 
-**OAuth Integrations:**
-- None
+**OAuth:**
+- Not applicable
 
 ## Monitoring & Observability
 
 **Error Tracking:**
-- None — errors logged via `print(..., file=sys.stderr)` (e.g., `ml/concepts.py:88-92`, `backend/routes/diff.py:20`)
+- Not detected (no Sentry, no Rollbar)
 
 **Analytics:**
-- None
+- Not detected
 
 **Logs:**
-- stdout/stderr only; no structured logging library
+- stdout / stderr only via `print(..., file=sys.stderr)` — no `logging` module configured
+- Startup warnings for missing env vars in `backend/main.py`
+- Concept extraction failures logged to stderr in `ml/concepts.py`
 
 ## CI/CD & Deployment
 
 **Hosting:**
-- Not yet deployed (hackathon)
+- Not deployed — local development only
 
 **CI Pipeline:**
-- None detected
+- Not detected — no `.github/workflows/`, no `Makefile`, no `Dockerfile`
 
 ## Environment Configuration
 
 **Development:**
-- Required env vars: `OPENAI_API_KEY` (required for `/api/diff`)
-- Optional env vars: `ANTHROPIC_API_KEY`, `CORS_ORIGINS` (default `http://localhost:5173`), `PORT` (default 8000), `HOST`
-- Secrets location: `.env` (gitignored), templates in `backend/.env.example` and `frontend/.env.example`
-- Mock services: `ml/_mock_align.py` provides hand-crafted alignment for offline dev, `ml/demo.py --mock` runs the full pipeline without API keys
+- Required env vars: `OPENAI_API_KEY` (for `/api/diff`), optionally `CORS_ORIGINS`, `PORT`, `HOST`, `ANTHROPIC_API_KEY`
+- Templates: `backend/.env.example`, `frontend/.env.example`
+- Frontend dev: Vite proxy at `http://localhost:5173` forwards `/api` → `http://localhost:8000`
+- ⚠️ **`backend/.env` appears to contain a real OPENAI_API_KEY and is tracked in git — see CONCERNS.md #1**
 
 **Staging / Production:**
-- N/A
+- Not configured
 
 ## Webhooks & Callbacks
 
-**Incoming:** None
+**Incoming:**
+- None
 
-**Outgoing / Background tasks:**
-- FastAPI `BackgroundTasks` pattern stubbed in `backend/routes/compare.py:168` for async LLM explanation; not yet wired
+**Outgoing:**
+- None
 
-## Integration Seams (Internal)
+## API Surface
 
-- `backend/services/align.py` - Seam between backend lead's Hungarian alignment (`ml/alignment_methods.py` on `origin/main`) and ML slice. Currently delegates to `ml/_mock_align.py`. One-line swap when Winston's real `align()` ships, plus an adapter for schema differences (see `notes/integration-with-winston.md`).
-- `backend/models/schemas.py` - Locked Pydantic contract shared by API, ML pipeline, and (eventually) frontend TypeScript types.
+Endpoints defined in `backend/main.py` and routers under `backend/routes/`:
+
+- `GET /` — root health
+- `GET /health` — detailed health (spaCy / OpenAI checks are TODO stubs)
+- `POST /api/diff` — primary semantic diff endpoint (`backend/routes/diff.py` → `ml/pipeline.py::run_diff()`)
+- `GET /api/diff/health` — diff endpoint health
+- `POST /compare` — legacy mock-only compare endpoint (`backend/routes/compare.py`)
+- `GET /explanation/{comparison_id}` — async explanation polling (legacy)
+- `GET /explanation/test/alive` — explanation health stub
+
+## Feature Flags & Staged Integrations
+
+- `USE_REAL_ALIGN` (default `0`) — gates `backend/services/_align_impl.py` (vendored Winston `semantic_hungarian`) vs. `ml/_mock_align.py` mock
+- When flipped on, real path calls `ml/embeddings.py::embed_texts()` for pair scoring
+- See `notes/integration-with-winston.md` for the staged rollout plan
 
 ---
 

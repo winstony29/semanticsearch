@@ -5,22 +5,11 @@
 ## Test Framework
 
 **Runner:**
-- pytest 8.3.3
-- Config: `pytest.ini` at project root
+- pytest 8.3.3 (`backend/requirements.txt`)
+- pytest-asyncio 0.24.0
+- Config: `pytest.ini` at repo root
 
-**Assertion Library:**
-- pytest built-in `assert`
-- Common matchers: equality, `pytest.approx` for floats, `pytest.raises` for exceptions
-
-**Run Commands:**
-```bash
-pytest                                    # Run all tests
-pytest tests/test_pipeline.py             # Single file
-pytest -k test_classify                   # Match by name
-pytest -ra -q                             # (default per pytest.ini)
-```
-
-`pytest.ini`:
+**`pytest.ini` content:**
 ```ini
 [pytest]
 asyncio_mode = auto
@@ -29,32 +18,53 @@ python_files = test_*.py
 addopts = -ra -q
 ```
 
+`asyncio_mode = auto` means `async def` test functions run without explicit `@pytest.mark.asyncio` (though some files still use it).
+
+**Assertion library:**
+- pytest built-in `assert` + `pytest.raises`
+
+**Run commands:**
+```bash
+pytest                                # Run all tests in tests/
+pytest -v                             # Verbose
+pytest tests/test_classification.py   # Single file
+pytest -k "test_above_stable"        # Filter by name
+```
+
+No watch mode, no coverage flag configured by default.
+
 ## Test File Organization
 
-**Location:**
-- All tests in `tests/` directory at project root (not co-located with source)
+**Location:** `tests/` directory only (per `pytest.ini` `testpaths = tests`)
 
-**Naming:**
-- `test_<module>.py` — mirrors the source module name (e.g., `tests/test_scoring.py` mirrors `ml/scoring.py`)
-- No filename distinction between unit, integration, regression — type inferred by content
+**Naming:** `test_<module>.py` mirrors source file naming
+- `tests/test_align_adapter.py` — `backend/services/align.py`
+- `tests/test_classification.py` — `ml/classification.py`
+- `tests/test_embeddings_retry.py` — `ml/embeddings.py`
+- `tests/test_metrics.py` — `ml/metrics.py`
+- `tests/test_mock_align.py` — `ml/_mock_align.py`
+- `tests/test_pipeline.py` — `ml/pipeline.py`
+- `tests/test_scoring.py` — `ml/scoring.py`
 
 **Structure:**
 ```
 tests/
-├── conftest.py                  # sys.path injection only (no shared fixtures)
-├── test_classification.py       # unit, sync
-├── test_scoring.py              # unit, sync
-├── test_metrics.py              # unit, sync
-├── test_mock_align.py           # unit, async
-├── test_embeddings_retry.py     # regression, async, mocks AsyncOpenAI
-└── test_pipeline.py             # integration, async, monkeypatched stages
+├── conftest.py                  # sys.path setup; no fixtures
+├── test_align_adapter.py
+├── test_classification.py
+├── test_embeddings_retry.py
+├── test_metrics.py
+├── test_mock_align.py
+├── test_pipeline.py
+└── test_scoring.py
 ```
 
 ## Test Structure
 
-**Suite Organization:**
+**Suite organization:** Class-based grouping (`Test<Subject>`) with method-level tests:
+
 ```python
-# Class-based grouping by function
+# tests/test_classification.py
 class TestClassifyPairs:
     def test_above_stable_is_unchanged(self):
         scored = [(_pair(0), STABLE_THRESHOLD + 0.01, 5.0)]
@@ -63,124 +73,96 @@ class TestClassifyPairs:
         assert kept[0].classification == "unchanged"
         assert split == []
 
-    def test_below_modified_is_split(self):
-        ...
+    def test_at_stable_is_unchanged(self):
+        scored = [(_pair(0), STABLE_THRESHOLD, 14.0)]
+        kept, split = classify_pairs(scored)
+        assert kept[0].classification == "unchanged"
+
+    def test_between_thresholds_is_modified(self):
+        sim = (STABLE_THRESHOLD + MODIFIED_THRESHOLD) / 2
+        scored = [(_pair(0), sim, 50.0)]
+        kept, split = classify_pairs(scored)
+        assert kept[0].classification == "modified"
 ```
 
 **Patterns:**
-- Arrange-Act-Assert style
-- Class-based grouping by function under test (`TestCosineToDrift`, `TestScorePair`, `TestClassifyPairs`)
-- Module-level `_helper()` functions (e.g., `_pair(idx)`, `_unit()`, `_near(...)`) for fixture-style data
-- Boundary cases tested explicitly ("at threshold", "above threshold", "below threshold")
+- One-class-per-subject grouping
+- Method names describe the boundary or property under test
+- Inline arrange/act/assert with comments only when boundary intent isn't obvious
+- No `beforeEach`-style fixtures — each test self-contained
 
 ## Mocking
 
-**Frameworks:**
-- `unittest.mock` (`MagicMock`, `patch`, `patch.object`)
-- pytest's `monkeypatch` fixture (preferred for module-attribute replacement)
+**Framework:** `unittest.mock` (`MagicMock`, `patch`, `patch.object`) combined with pytest-asyncio
 
 **Patterns:**
-
-Module-attribute replacement via `monkeypatch` (preferred for async pipeline stubs — `tests/test_pipeline.py`):
 ```python
-@pytest.fixture
-def patched_pipeline(monkeypatch):
-    async def fake_embed(alignment):
-        return _build_realistic_embeddings()
-
-    async def fake_concepts(before, after):
-        return ConceptDiff(concepts=[]), "ok"
-
-    monkeypatch.setattr(pipeline_mod, "embed_clauses", fake_embed)
-    monkeypatch.setattr(pipeline_mod, "extract_concepts", fake_concepts)
+# tests/test_align_adapter.py — patching the AsyncOpenAI client
+@pytest.mark.asyncio
+async def test_real_align_smoke_identical_text():
+    fake_client = MagicMock()
+    fake_client.embeddings.create = _fake_create_factory()
+    with patch.object(align_mod, "USE_REAL_ALIGN", True), \
+         patch.object(emb, "AsyncOpenAI", return_value=fake_client):
+        result = await align_mod.align(before, after)
 ```
 
-Side-effect tracking with counter dicts (`tests/test_embeddings_retry.py`):
-```python
-attempts = {"n": 0}
+**Helper factories** (defined in test files, not shared fixtures):
+- `_fake_create_factory()` — fake OpenAI client (`tests/test_align_adapter.py`)
+- `_pair(idx)`, `_br(...)`, `_pr(...)` — small test data builders
 
-async def failing_create(**kwargs):
-    attempts["n"] += 1
-    raise APIConnectionError(request=MagicMock())
+**What gets mocked:**
+- `AsyncOpenAI` client (embeddings + chat completions)
+- The `USE_REAL_ALIGN` flag in `backend/services/align.py`
+- Specific module attributes via `patch.object`
 
-fake_client = MagicMock()
-fake_client.embeddings.create = failing_create
-
-with patch.object(emb, "AsyncOpenAI", return_value=fake_client):
-    with pytest.raises(APIConnectionError):
-        await emb.embed_clauses(alignment)
-
-assert attempts["n"] == 6   # tenacity retried 6 times
-```
-
-**What to mock:**
-- OpenAI SDK clients (AsyncOpenAI)
-- Async pipeline stages when running integration tests deterministically
-
-**What NOT to mock:**
-- Pure ML functions (scoring, classification, metrics) — tested directly
-- Mock alignment (`ml/_mock_align.py`) — used as real input
+**What does NOT get mocked:**
+- Pure compute functions (cosine, drift remap, classification thresholds)
+- Pydantic schema validation
 
 ## Fixtures and Factories
 
-**`tests/conftest.py`:**
-```python
-import sys
-from pathlib import Path
+**No `@pytest.fixture` decorators detected** — tests inline-create their data via helper functions in each file.
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-```
-Used solely to enable `from ml.pipeline import run_diff` and `from backend.models.schemas import ...` from the tests directory. **No shared pytest fixtures defined.**
+**`tests/conftest.py`:** minimal — only adjusts `sys.path` so `backend.*` and `ml.*` imports resolve.
 
-**Factories:**
-- Local `_helper()` functions inside each test module (e.g., `_pair()`, `_unit()`, `_near()`, `_build_realistic_embeddings()`)
-- No shared factory module (note: `_build_mock_embeddings` is duplicated between `tests/test_pipeline.py` and `ml/demo.py` — see CONCERNS)
+**Special:** `ml/test_cases.py` is **not** a pytest module — it's a fixture corpus
+- 12 hand-built edge cases under `TEST_CASES: dict`
+- Helpers: `get_test_case()`, `get_all_test_cases()`, `get_test_cases_by_difficulty()`, `print_test_case_summary()`
+- Cherry-picked from `origin/main` for threshold-tuning experiments
+- Not collected by pytest because `pytest.ini` restricts to `tests/`
 
 ## Coverage
 
-**Requirements:**
-- No coverage target enforced
-- No `.coveragerc` or `[tool.coverage]` config
+**Not configured.** No `--cov` flag, no `.coveragerc`, no coverage tool in `requirements.txt`. Coverage tracked only manually if at all.
 
-**Configuration:**
-- None
+## Test Types Present
 
-**View Coverage:**
-- Not currently set up. Could run: `pip install pytest-cov && pytest --cov=ml --cov=backend`
+**Unit tests (majority):**
+- `tests/test_classification.py` — boundary tests for `classify_pairs()` / `classify_unmatched()`
+- `tests/test_metrics.py` — `aggregate_metrics()` counting + weighting + edge cases
+- `tests/test_scoring.py` — cosine + drift remap pure compute
 
-## Test Types
+**Integration / smoke tests:**
+- `tests/test_align_adapter.py` — Winston adapter end-to-end with mocked OpenAI
+- `tests/test_mock_align.py` — mock alignment shape contract
+- `tests/test_pipeline.py` — `run_diff()` wired with mocks
 
-**Unit (sync, pure):**
-- `tests/test_scoring.py`, `tests/test_classification.py`, `tests/test_metrics.py`
-- Test pure functions in isolation; no I/O, no mocks
+**Regression tests:**
+- `tests/test_embeddings_retry.py` — verifies tenacity retry fires on `APIConnectionError`
 
-**Unit (async):**
-- `tests/test_mock_align.py`
-- `@pytest.mark.asyncio` decorator (or `asyncio_mode = auto` lifts that requirement)
-
-**Regression (mocked):**
-- `tests/test_embeddings_retry.py`
-- Mocks `AsyncOpenAI` to verify tenacity retry policy (6 attempts before re-raise)
-
-**Integration:**
-- `tests/test_pipeline.py`
-- Drives `run_diff()` end-to-end with stubbed embedding + concept stages
-- Validates full `DiffResponse` shape and classification correctness
-
-**E2E / route:**
-- None present (gap noted in CONCERNS — no `test_routes.py` for `/api/diff`)
+**E2E:** None against the live FastAPI server; closest substitute is `ml/demo.py` for manual integration runs.
 
 ## Common Patterns
 
-**Async testing:**
+**Async tests:**
 ```python
-async def test_run_diff_assembles_full_response_shape(patched_pipeline):
-    response = await run_diff(SAMPLE_BEFORE, SAMPLE_AFTER)
-    assert isinstance(response, DiffResponse)
-    assert [c.id for c in response.before_clauses] == ["b0", "b1", "b2", "b3", "b4"]
+@pytest.mark.asyncio
+async def test_real_align_smoke_identical_text():
+    result = await align_mod.align(before, after)
+    assert result.pairs[0].before_clause.text == ...
 ```
+(Decorator is technically optional under `asyncio_mode = auto`, but kept for clarity in some files.)
 
 **Error testing:**
 ```python
@@ -188,7 +170,19 @@ with pytest.raises(APIConnectionError):
     await emb.embed_clauses(alignment)
 ```
 
-**Snapshot testing:** Not used.
+**Retry attempt tracking:**
+```python
+attempts = {"n": 0}
+async def failing_create(**kwargs):
+    attempts["n"] += 1
+    raise APIConnectionError(...)
+```
+
+**Boundary testing:** Tests deliberately probe at-threshold values (`STABLE_THRESHOLD`, `STABLE_THRESHOLD + 0.01`, `STABLE_THRESHOLD - 0.01`) to lock down classification behavior.
+
+**Parametrize:** Not used. Multiple boundary tests are written as separate methods.
+
+**Snapshot:** Not used.
 
 ---
 

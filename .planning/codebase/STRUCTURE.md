@@ -6,166 +6,206 @@
 
 ```
 semanticsearch/
-├── backend/                # FastAPI server, services, schemas
-│   ├── main.py             # App entry, router registration, CORS
+├── backend/                  # FastAPI server + alignment seam
+│   ├── main.py              # Entry point: load .env, CORS, mount routers
 │   ├── models/
-│   │   └── schemas.py      # Pydantic data contract (single source of truth)
+│   │   └── schemas.py       # All Pydantic DTOs (legacy + new contracts)
 │   ├── routes/
-│   │   ├── compare.py      # POST /compare (legacy, mocked)
-│   │   ├── diff.py         # POST /api/diff (new, ML-backed)
-│   │   └── explanation.py  # GET /explanation/{id} (legacy polling)
+│   │   ├── compare.py       # POST /compare (legacy)
+│   │   ├── diff.py          # POST /api/diff (new)
+│   │   └── explanation.py   # GET /explanation/{id}
 │   ├── services/
-│   │   ├── align.py        # Alignment seam (mock → real Hungarian)
-│   │   ├── ml_client.py    # Legacy ML wrapper (mock data)
-│   │   └── tokenizer.py    # spaCy sentence tokenization (legacy)
-│   ├── utils/              # (empty)
-│   ├── requirements.txt    # Canonical Python deps
+│   │   ├── align.py         # Alignment dispatcher (mock ↔ real)
+│   │   ├── _align_impl.py   # Vendored Winston semantic_hungarian
+│   │   ├── ml_client.py     # Legacy mock bridge (deprecated)
+│   │   └── tokenizer.py     # spaCy → regex fallback
+│   ├── utils/               # (empty placeholder)
+│   ├── requirements.txt
+│   ├── .env                 # ⚠️ tracked in git — see CONCERNS.md
 │   └── .env.example
-├── ml/                     # Async ML pipeline
-│   ├── __init__.py
-│   ├── pipeline.py         # Step 6: run_diff() orchestrator
-│   ├── embeddings.py       # Step 1: OpenAI batch embed + tenacity retry
-│   ├── scoring.py          # Step 2: cosine similarity + drift remap
-│   ├── classification.py   # Step 3: threshold-based labelling
-│   ├── metrics.py          # Step 4: DiffSummary aggregation
-│   ├── concepts.py         # Step 5: gpt-4o-mini structured output
-│   ├── thresholds.py       # All tunable constants
-│   ├── _mock_align.py      # Hand-crafted mock alignment (dev only)
-│   ├── demo.py             # Runnable CLI: --mock, --before, --after
-│   └── requirements.txt    # Mirror of backend deps for standalone install
-├── frontend/               # React + TypeScript + Vite (separate branch)
-│   ├── src/
+│
+├── ml/                       # ML slice
+│   ├── pipeline.py          # run_diff() orchestrator
+│   ├── embeddings.py        # OpenAI embeddings + batching + tenacity retry
+│   ├── scoring.py           # Cosine + drift remap
+│   ├── classification.py    # Threshold buckets + split
+│   ├── concepts.py          # gpt-4o-mini concept extraction
+│   ├── metrics.py           # Counts, drift, Levenshtein text-edit %
+│   ├── thresholds.py        # Single source of truth for ML tunables
+│   ├── _mock_align.py       # Hand-crafted mock alignment
+│   ├── test_cases.py        # Threshold-tuning fixture corpus (NOT pytest)
+│   ├── demo.py              # Manual integration demo
+│   └── requirements.txt
+│
+├── frontend/                 # React + TypeScript UI
 │   ├── package.json
-│   └── tsconfig.json
-├── tests/                  # pytest suite (root-relative imports)
-│   ├── conftest.py         # sys.path injection for absolute imports
+│   ├── vite.config.ts       # Vite + /api proxy → :8000
+│   ├── tsconfig.json
+│   ├── .env.example
+│   └── src/
+│       ├── main.tsx         # Vite entry
+│       ├── App.tsx          # Root: InputPanel ↔ DiffViewer
+│       ├── api/client.ts    # HTTP client
+│       ├── components/      # InputPanel.tsx, DiffViewer.tsx, SummaryBar.tsx
+│       ├── types/api.ts     # TS mirrors of Pydantic schemas
+│       └── styles/App.css
+│
+├── tests/                    # pytest suite
+│   ├── conftest.py          # sys.path setup; no fixtures
+│   ├── test_align_adapter.py
 │   ├── test_classification.py
-│   ├── test_scoring.py
-│   ├── test_metrics.py
 │   ├── test_embeddings_retry.py
+│   ├── test_metrics.py
 │   ├── test_mock_align.py
-│   └── test_pipeline.py
-├── notes/                  # Dev handoff docs
+│   ├── test_pipeline.py
+│   └── test_scoring.py
+│
+├── notes/                    # Handoff & integration docs
 │   ├── integration-with-winston.md
-│   └── ml-branch-handoff.md
-├── test_data/              # Sample documents for manual testing
-├── files (1)/              # Original planning docs (ROADMAP, TEAM_SPLIT, DATA_CONTRACT, PROMPTS)
-├── ML_ARCHITECTURE.md      # Definitive ML spec (7 sections)
+│   └── multilingual-handoff.md
+│
+├── test_data/                # Sample documents for manual testing
+├── .planning/                # GSD milestone/phase tracking
+├── .claude/                  # Claude Code config
 ├── README.md
-├── pytest.ini              # asyncio_mode = auto, testpaths = tests
-└── .planning/codebase/     # This map
+├── ML_ARCHITECTURE.md       # Detailed ML slice design
+├── pytest.ini
+└── .gitignore
 ```
 
 ## Directory Purposes
 
-**`backend/`:**
-- Purpose: FastAPI server, HTTP layer, data contracts, service seams
-- Contains: app entry, route handlers, Pydantic schemas, service classes
-- Key files: `backend/main.py`, `backend/models/schemas.py`, `backend/services/align.py`
-- Subdirectories: `models/` (schemas), `routes/` (one module per endpoint group), `services/` (cross-cutting), `utils/` (empty)
+**backend/**
+- Purpose: FastAPI API server + backend-owned integration seams
+- Contains: `main.py` entry, `models/`, `routes/`, `services/`
+- Key files: `main.py`, `models/schemas.py`, `services/align.py`
 
-**`ml/`:**
-- Purpose: Async ML pipeline — embeddings, scoring, classification, metrics, concepts, orchestration
-- Contains: numbered pipeline steps + thresholds + mock + demo
-- Key files: `ml/pipeline.py` (entry `run_diff`), `ml/thresholds.py` (config), `ml/_mock_align.py` (dev fallback)
-- Pattern: each file is one pipeline stage; underscore-prefixed (`_mock_align.py`) marks internal/dev-only
+**backend/models/**
+- Purpose: Pydantic DTOs — single shared contract between frontend, backend, ML slice
+- Key file: `schemas.py` (both legacy and new contract families)
 
-**`tests/`:**
-- Purpose: pytest unit + integration tests
-- Contains: `test_<module>.py` files, `conftest.py` (sys.path setup)
-- Key files: `tests/test_pipeline.py` (integration), `tests/test_embeddings_retry.py` (regression)
+**backend/routes/**
+- Purpose: FastAPI routers per endpoint family
+- Key files: `compare.py` (legacy), `diff.py` (new — wires to ML pipeline), `explanation.py` (polling)
 
-**`frontend/`:**
-- Purpose: React + TypeScript UI (not active on ML branch)
-- Contains: Vite app, components, API client
+**backend/services/**
+- Purpose: Business logic + integration seams
+- Key files: `align.py` (mock/real dispatcher), `_align_impl.py` (vendored Winston code), `tokenizer.py` (sentence split), `ml_client.py` (legacy mock)
 
-**`notes/`:**
-- Purpose: Branch-handoff docs, integration risks, decision logs
-- Key files: `notes/integration-with-winston.md`, `notes/ml-branch-handoff.md`
+**ml/**
+- Purpose: ML pipeline modules; each step lives in its own file
+- Owners: ML team (Agents 2/3/4 per `ML_ARCHITECTURE.md`)
+- Key files: `pipeline.py`, `embeddings.py`, `scoring.py`, `classification.py`, `concepts.py`, `metrics.py`, `thresholds.py`
 
-**`test_data/`, `files (1)/`:**
-- Purpose: Sample documents and original planning artifacts (read-only)
+**frontend/src/**
+- Purpose: React UI — input panel + side-by-side diff viewer + summary
+- Key files: `App.tsx`, `api/client.ts`, `components/DiffViewer.tsx`, `types/api.ts`
+
+**tests/**
+- Purpose: pytest suite mirroring ML and adapter modules
+- Naming: `test_<module>.py` matching the source it covers
+
+**notes/**
+- Purpose: Cross-team handoff and decision documents
+- Key files: `integration-with-winston.md` (staged rollout plan), `multilingual-handoff.md` (tokenizer + threshold concerns)
+
+**test_data/**
+- Purpose: Sample input documents for manual testing and demos
+
+**.planning/**
+- Purpose: GSD-tracked planning artifacts (milestones, phases, this codebase map)
 
 ## Key File Locations
 
 **Entry Points:**
-- `backend/main.py` - FastAPI app, `uvicorn backend.main:app`
-- `ml/pipeline.py:run_diff()` - Pipeline entry
-- `ml/demo.py` - CLI demo (`python -m ml.demo`)
+- `backend/main.py` — FastAPI app boot (`python backend/main.py` or `uvicorn backend.main:app`)
+- `frontend/src/main.tsx` — Vite dev server entry (`npm run dev` from `frontend/`)
+- `ml/demo.py` — Manual integration demo for the ML pipeline
 
 **Configuration:**
-- `pytest.ini` - test discovery + `asyncio_mode = auto`
-- `ml/thresholds.py` - all ML tunables
-- `backend/.env.example` / `frontend/.env.example` - env var declarations
-- No `pyproject.toml`, no `ruff.toml`, no `.flake8`
+- `pytest.ini` — pytest config (asyncio_mode=auto, testpaths=tests)
+- `frontend/vite.config.ts` — Vite + React + `/api` proxy
+- `frontend/tsconfig.json` — TS compiler
+- `backend/.env` / `backend/.env.example` — API keys, host/port, CORS
+- `frontend/.env.example` — `VITE_API_URL`
+- `ml/thresholds.py` — All ML tunables (model IDs, thresholds, input caps, feature flags)
 
 **Core Logic:**
-- `backend/models/schemas.py` - Pydantic contract (DiffRequest, DiffResponse, AlignmentResult, ClauseUnit, AlignedPair, ClauseRendering, Concept, DiffSummary)
-- `ml/pipeline.py` - orchestration
-- `ml/embeddings.py`, `ml/scoring.py`, `ml/classification.py`, `ml/metrics.py`, `ml/concepts.py` - pipeline stages
+- Alignment dispatcher: `backend/services/align.py`
+- Mock alignment: `ml/_mock_align.py`
+- Real alignment (vendored): `backend/services/_align_impl.py`
+- Pipeline orchestrator: `ml/pipeline.py`
+- Per-step modules: `ml/embeddings.py`, `ml/scoring.py`, `ml/classification.py`, `ml/concepts.py`, `ml/metrics.py`
 
 **Testing:**
-- `tests/conftest.py` - sys.path injection (no shared fixtures)
-- `tests/test_pipeline.py` - end-to-end with monkeypatched embeddings/concepts
+- Suite: `tests/test_*.py`
+- Fixture corpus (not pytest): `ml/test_cases.py`
 
 **Documentation:**
-- `README.md` - Setup + endpoints
-- `ML_ARCHITECTURE.md` - Definitive ML spec
-- `notes/*.md` - Handoff and integration risk docs
+- `README.md` — Project overview & quick start
+- `ML_ARCHITECTURE.md` — Detailed ML slice design (steps 1–7, contracts, thresholds)
+- `notes/integration-with-winston.md` — Staged Winston integration plan
+- `notes/multilingual-handoff.md` — Tokenizer + multilingual threshold concerns
 
 ## Naming Conventions
 
 **Files:**
-- `snake_case.py` for all Python modules
-- `_underscore_prefix.py` for internal/dev-only modules (`ml/_mock_align.py`)
-- `test_<module>.py` mirrors source module name in `tests/`
+- snake_case for Python (`ml_client.py`, `test_classification.py`, `_mock_align.py`)
+- Underscore prefix for internal/vendored modules (`_mock_align.py`, `_align_impl.py`)
+- PascalCase for React components (`DiffViewer.tsx`, `InputPanel.tsx`)
+- kebab-case for some markdown notes (`integration-with-winston.md`)
+- UPPERCASE.md for top-level project docs (`README.md`, `ML_ARCHITECTURE.md`)
 
 **Directories:**
-- `snake_case` for Python packages
-- Singular module names (`schemas.py`), plural for collections (`routes/`, `services/`, `models/`)
+- snake_case / lowercase (`backend/`, `ml/`, `frontend/`, `tests/`, `notes/`, `test_data/`)
+- Plural for collections (`models/`, `routes/`, `services/`, `components/`)
 
 **Special Patterns:**
-- Clause IDs: `b{n}` for before, `a{n}` for after — assumed throughout `ml/pipeline.py`, `ml/_mock_align.py`, `ml/metrics.py`
-- Classification literals: lowercase strings (`"unchanged"`, `"modified"`, `"added"`, `"removed"`)
+- `test_*.py` for pytest files (under `tests/`)
+- `_*.py` for private/internal modules
+- `__init__.py` minimal (no barrel re-exports)
+- Clause IDs: `b0`, `b1` (before) / `a0`, `a1` (after)
+- Pair IDs: `pair_000`, `pair_add_001`, `pair_del_002` (legacy)
 
 ## Where to Add New Code
 
-**New ML pipeline stage:**
-- Implementation: `ml/<stage>.py` — single-purpose module, pure functions where possible
-- Wiring: import + call from `ml/pipeline.py:run_diff()`
-- Tests: `tests/test_<stage>.py` mirroring existing patterns
-- Constants: add to `ml/thresholds.py` (do NOT inline magic numbers)
-
 **New API endpoint:**
-- Route module: `backend/routes/<endpoint>.py` (define `router = APIRouter(...)`)
-- Wire into app: `app.include_router(...)` in `backend/main.py`
-- Schema: add request/response models to `backend/models/schemas.py`
-- Tests: `tests/test_routes_<endpoint>.py` (currently no route tests exist — see CONCERNS)
+- Route: new file under `backend/routes/`
+- Register: in `backend/main.py` with `app.include_router(...)`
+- DTOs: add to `backend/models/schemas.py`
+- Tests: `tests/test_<route_name>.py`
 
-**New service:**
-- Implementation: `backend/services/<service>.py`
-- Imports schemas from `backend/models/schemas.py`
+**New service / business logic:**
+- Module: `backend/services/<name>.py`
+- Tests: `tests/test_<name>.py`
 
-**Threshold tuning:**
-- Edit `ml/thresholds.py` only
+**New ML pipeline step:**
+- Module: `ml/<step_name>.py`
+- Wire into: `ml/pipeline.py::run_diff()` (likely as another `asyncio.create_task` if I/O-bound)
+- Tunables: add constants to `ml/thresholds.py`
+- Tests: `tests/test_<step_name>.py`
 
-**Mock data for dev:**
-- Follow `ml/_mock_align.py` pattern; monkey-patch into pipeline (see `ml/demo.py:_install_mocks()`)
+**New frontend component:**
+- Component: `frontend/src/components/<Name>.tsx` (PascalCase)
+- API types: update `frontend/src/types/api.ts`
+- API call: extend `frontend/src/api/client.ts`
+
+**ML tuning:**
+- Edit `ml/thresholds.py` only — no changes to scoring/classification logic should be needed
+
+**Utilities:**
+- `backend/utils/` is currently empty; reserved for shared helpers
 
 ## Special Directories
 
-**`.planning/codebase/`:**
-- Purpose: This map (auto-generated by `/gsd:map-codebase`)
-- Source: 4 parallel Explore agents
-- Committed: Yes (planning artifacts)
+**backend/utils/**
+- Currently empty; reserved for cross-cutting helpers
 
-**`.claude/`:**
-- Purpose: Claude Code harness config, custom skills/agents
-- Committed: Per `.gitignore` rules (currently untracked per `git status`)
+**files (1)/**
+- Legacy artifact at the repo root from an earlier upload; not referenced in code
 
-**`__pycache__/`:**
-- Purpose: Python bytecode
-- Committed: No
+**__pycache__/, .pytest_cache/, node_modules/**
+- Auto-generated, gitignored
 
 ---
 

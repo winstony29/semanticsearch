@@ -2,212 +2,141 @@
 
 **Analysis Date:** 2026-05-09
 
-## Tech Debt
-
-**`sys.path` injection still active:**
-- Issue: `backend/main.py` and `ml/demo.py` inject the project root into `sys.path` so sibling packages (`backend.*`, `ml.*`) are importable
-- Files: `backend/main.py`, `ml/demo.py`, `tests/conftest.py`
-- Why: No shared parent package; absolute imports require sys.path setup
-- Impact: Fragile to layout changes; cannot run modules from arbitrary cwd
-- Fix approach: Reorganize into a single root package, or document this as intentional and lock down with tests
-
-**Duplicated mock-embedding helpers:**
-- Issue: `_build_mock_embeddings()`, `_unit()`, `_near()` appear identically in two places
-- Files: `ml/demo.py`, `tests/test_pipeline.py`
-- Why: Helpers were not extracted to a shared module
-- Impact: Drift risk between demo and tests
-- Fix approach: Move helpers into `tests/conftest.py` (or a `tests/_helpers.py`) and import from both call sites
-
-**Legacy `/compare` endpoint with stale mock data:**
-- Issue: `backend/routes/compare.py` + `backend/services/ml_client.py` return hardcoded similarity scores (0.92/0.75/0.55); not maintained
-- Files: `backend/routes/compare.py`, `backend/services/ml_client.py`
-- Why: Original placeholder predates the ML branch
-- Impact: Frontend wired to `/compare` will see stale mock results that diverge from `/api/diff`
-- Fix approach: Either deprecate `/compare` or have it call `run_diff` and adapt to the legacy schema
-
-**Unused backward-compat alias:**
-- Issue: `score_alignment = score_pairs` defined but unused
-- Files: `ml/scoring.py`
-- Why: Refactor leftover
-- Impact: Negligible; dead code
-- Fix approach: Remove
-
-## Known Bugs / Integration Risks
-
-**Double-pruning when Winston's real align() lands:**
-- Issue: Winston's `semantic_hungarian()` (in `origin/main:ml/alignment_methods.py`) pre-prunes at `match_threshold`; ML slice then re-prunes via `REMOVED_THRESHOLD` in `classify_pairs`. Both firing on the same pairs surfaces every borderline pair as removed/added instead of modified.
-- Files: `ml/classification.py`, `notes/integration-with-winston.md`
-- Why: Winston's branch and ML branch developed independently
-- Impact: HIGH — visibly degrades output quality
-- Fix approach: Pick one threshold owner. Recommended (per notes): pass `split_below_threshold=False` post-Hungarian and trust Winston's `match_threshold`. Pin the decision before merge.
-
-**Schema mismatch between Winston's align() and AlignmentResult:**
-- Issue: Winston returns `{method, pairs, similarity_matrix}` with mixed status ("matched", "added", "deleted", "merged", "split") in a flat `pairs` list. ML expects `AlignmentResult{pairs: [AlignedPair], unmatched_before, unmatched_after}`. "merged" has no representation in current schema.
-- Files: `backend/models/schemas.py`, `notes/integration-with-winston.md` (adapter sketch lines 186–234)
-- Impact: HIGH — direct wire-up will fail
-- Fix approach: Implement the adapter sketch in `backend/services/align.py`; decide on `paired_with: list[str]` vs `Classification = "merged"` extension before merging Winston's code
-
-**Merging not actually concatenated:**
-- Issue: Winston's code tags merged pairs but does not concatenate texts into a single ClauseUnit
-- Files: `origin/main:ml/alignment_methods.py`, `ML_ARCHITECTURE.md` §1, §6
-- Impact: MEDIUM — undercounts clauses on real merges
-- Fix approach: Add merge-text-concatenation in the alignment adapter
-
-**Frontend types stale vs new contract:**
-- Issue: Frontend TypeScript types reflect legacy `/compare` shapes, not `DiffResponse`
-- Files: `frontend/src/types/api.ts` (per handoff notes)
-- Impact: HIGH for UI integration
-- Fix approach: Frontend lead regenerates TS types from `backend/models/schemas.py`
+> Concerns surfaced by parallel exploration agents. Critical items at top. Cross-reference `notes/integration-with-winston.md` and `notes/multilingual-handoff.md` for the most up-to-date plans.
 
 ## Security
 
-**API key validation only at boot, only as warning:**
-- Issue: `backend/main.py:21-30` warns to stderr if `OPENAI_API_KEY` is missing but does not block startup; `/api/diff` then fails per-request with a generic 500
-- Files: `backend/main.py`, `ml/embeddings.py`, `ml/concepts.py`
-- Risk: Silent misconfiguration; users get cryptic errors at request time
-- Fix approach: Add a stricter check that raises during startup unless an explicit `ALLOW_NO_KEYS=1` is set (for tests)
+**Live OpenAI API key in tracked `.env`:**
+- Files: `backend/.env`
+- Issue: A real `OPENAI_API_KEY` (`sk-proj-…`) appears in the working copy and the file is not gitignored. Risk of public exposure if the repo is ever published or shared.
+- Why: Quickstart shortcut; `.env` was created and not added to `.gitignore`.
+- Impact: Token theft, billing abuse, potential malicious use of your account.
+- Fix approach: (1) Rotate the key in the OpenAI dashboard immediately. (2) Add `backend/.env` to `.gitignore`. (3) Purge from history: `git rm --cached backend/.env && git commit -m "chore: untrack .env"` and consider rewriting history if it was ever pushed. (4) Keep only `backend/.env.example`.
 
-**Permissive CORS:**
-- Issue: `allow_methods=["*"]`, `allow_headers=["*"]` in `backend/main.py`
-- Risk: Acceptable for hackathon, anti-pattern for prod
-- Fix approach: Restrict to `POST` + `Content-Type` before deploy
+**Bare `except:` in tokenizer fallback:**
+- Files: `backend/services/tokenizer.py`
+- Issue: `try: spacy.load(...) except: SPACY_AVAILABLE = False` swallows every exception, including OOM, permission errors, or import-time failures.
+- Why: Originally added to handle both `ImportError` and missing model, but written too broadly.
+- Impact: Real load failures are masked; tokenization silently degrades to a regex splitter.
+- Fix approach: Narrow to `except (ImportError, OSError):`. (Or remove spaCy entirely per multilingual fix below.)
 
-**Unredacted exception messages logged / returned:**
-- Issue: `backend/routes/diff.py:20` returns raw exception text via `HTTPException(500, detail=...)`; `ml/concepts.py:88-92` prints exceptions to stderr
-- Risk: Low (unlikely to contain secrets), but no redaction layer
-- Fix approach: Wrap exceptions; log full traceback server-side, return generic message to client
+## Tech Debt
 
-## Performance Bottlenecks
-
-**No caching of identical-input pipelines:**
-- Issue: Identical `(before, after)` pairs re-run embeddings + concept extraction every request
-- Files: `ml/pipeline.py`
-- Impact: Cost waste in production, no impact on hackathon
-- Fix approach: Deferred per `ML_ARCHITECTURE.md` §5
-
-**Document size cap may be too tight:**
-- Issue: `DiffRequest` enforces `max_length=20_000` per side; real contracts often exceed this
+**Uncommitted change to `backend/models/schemas.py`:**
 - Files: `backend/models/schemas.py`
-- Impact: Will reject realistic inputs
-- Fix approach: Raise cap when chunking lands
+- Issue: `ConceptStatus` literal now includes `"removed"` (matches `ml/concepts.py`) but the change is unstaged/uncommitted.
+- Why: Schema evolved alongside concept extraction; not yet committed.
+- Impact: Tests/CI run against stale schema if a worker re-clones; reproducibility gap.
+- Fix approach: Commit with a tight message — e.g. `schemas: add 'removed' to ConceptStatus literal`.
 
-**Concept extraction truncates lossily at 60K chars:**
-- Issue: Hardcoded `MAX_CONCEPT_INPUT_CHARS = 60_000` with `[TRUNCATED at 60,000 chars]` marker
-- Files: `ml/thresholds.py`, `ml/concepts.py`
-- Impact: Acceptable per spec; flagged for later chunking work
+**Double threshold pruning between Winston and ML classifier:**
+- Files: `ml/classification.py`, `ml/pipeline.py`, `ml/thresholds.py`, `notes/integration-with-winston.md`
+- Issue: `_align_impl.py` prunes pairs with cosine < 0.6 inside the Hungarian matcher; `classify_pairs()` re-prunes < `REMOVED_THRESHOLD = 0.65` afterward. Borderline pairs (0.60–0.65) get split into added+removed instead of staying as `modified`.
+- Why: Two layers were tuned independently before integration.
+- Impact: UX shows spurious add/delete pairs that should be a single modification.
+- Fix approach: Pick one source of truth. Recommended: drop the post-Hungarian re-prune in `classify_pairs()` and set `ALIGNMENT_PRE_PRUNES = True` in `ml/thresholds.py`. Or lower Winston's match threshold to ~0.45 and keep our classifier as authoritative.
+
+**Legacy `/compare` route is mock-only:**
+- Files: `backend/routes/compare.py`, `backend/services/ml_client.py`
+- Issue: `compare_sentences_ml()` returns hardcoded mock data (`# TODO: call actual ML pipeline`). Uses old `green/yellow/red` schema.
+- Why: Superseded by `/api/diff` but never removed.
+- Impact: Frontend code paths that still hit `/compare` see fake results. Confusing dual contract.
+- Fix approach: Either deprecate (return 410 / redirect to `/api/diff`) or wire it to `run_diff()` and translate the response.
+
+**Sync stub in legacy compare path will break async wiring:**
+- Files: `backend/routes/compare.py`, `backend/services/ml_client.py`
+- Issue: `compare_sentences_ml()` is sync; if anyone wires it to `await run_diff(...)` later, it'll raise.
+- Fix approach: Make `ml_client.compare_sentences_ml` async and `await` it from the route (the route handler is already async).
+
+**Inconsistent input size limits:**
+- Files: `backend/models/schemas.py`, `ml/concepts.py`
+- Issue: API caps `before`/`after` at 20_000 chars; concept extraction independently truncates at 60_000. CLI/demo entry has no limit.
+- Fix approach: Pick one boundary (e.g., 30_000 per side, ~60k combined) and apply uniformly. Document in OpenAPI description.
+
+## Known Bugs
+
+**English-only tokenizer breaks multilingual diffs:**
+- Files: `backend/services/tokenizer.py`, `notes/multilingual-handoff.md`
+- Issue: spaCy `en_core_web_sm` only handles Latin punctuation; non-English (CJK `。！？`, Arabic `؟`, Devanagari `।`) falls back to naive `split(". ")` and produces malformed clauses.
+- Why: Hackathon scope was English-only.
+- Impact: Cross-lingual diffs (a stated future feature) silently produce wrong clause boundaries.
+- Fix approach: Drop spaCy; use the regex sentence splitter spec'd in `notes/multilingual-handoff.md`. Drop `spacy==3.8.2` from `backend/requirements.txt` and remove the `python -m spacy download` step from `README.md`.
 
 ## Fragile Areas
 
-**Alignment seam (`backend/services/align.py`):**
-- Why fragile: Currently delegates to `ml/_mock_align`; swap-in of Winston's real algorithm changes the output schema
-- Files: `backend/services/align.py`, `ml/_mock_align.py`
-- Common failures: Schema mismatch, double-pruning, missing merge representation
-- Safe modification: Write adapter + tests against both mock and real outputs before flipping the import
-- Test coverage: NONE for the adapter (gap)
+**Winston adapter shim is staged behind a flag:**
+- Files: `backend/services/align.py`, `backend/services/_align_impl.py`, `notes/integration-with-winston.md`
+- Issue: `USE_REAL_ALIGN=0` by default. Real path drops Winston's `"merged"` and `"split"` status values silently and doesn't concatenate merged-text into a single `ClauseUnit`.
+- Why: Winston's algorithm is not finalized on his branch; vendored snapshot in `_align_impl.py` is staging only.
+- Impact: When flipped on prematurely, merged clauses vanish (count mismatch). Not safe for real traffic.
+- Fix approach: Wait for Winston's final push, then follow the 5-step plan in `notes/integration-with-winston.md`. Decide whether to handle merged/split now or defer.
 
-**Clause ID format (`b{n}` / `a{n}`) assumed throughout:**
-- Why fragile: `ml/pipeline.py` checks `id.startswith("b")` / `id.startswith("a")` to attribute split clauses; if Winston's align() returns different IDs, split logic silently breaks
-- Files: `ml/pipeline.py`, `ml/_mock_align.py`, `ml/metrics.py`
-- Safe modification: Document ID format in `ClauseUnit` docstring; assert in alignment adapter
-- Test coverage: Implicit via `tests/test_pipeline.py`
+**Embedding retry exhaustion is uncaught:**
+- Files: `ml/embeddings.py`, `backend/routes/diff.py`
+- Issue: Tenacity re-raises after 6 attempts; the exception bubbles to the route's generic `except Exception` and returns an opaque 500.
+- Why: No graceful degradation path designed.
+- Impact: OpenAI outages produce a confusing error with no fallback. No partial response.
+- Fix approach: Catch `_RETRYABLE_OPENAI_ERRORS` after exhaustion in `embed_clauses()` and either return a structured error or a degraded response (e.g., metrics from Levenshtein only).
 
-**Concept extraction silent failure:**
-- Why fragile: Broad `except Exception` returns empty + `status="failed"`; failures hidden unless stderr is read
-- Files: `ml/concepts.py:88-92`
-- Safe modification: Switch to `logging` module so failures are aggregable
-- Test coverage: None for failure path
+**Concept extraction has no retry:**
+- Files: `ml/concepts.py`, `ml/pipeline.py`
+- Issue: A single OpenAI call wrapped in `except Exception` → returns `status="failed"`. Transient connection blips look the same as a model refusal.
+- Fix approach: Add tenacity retry mirroring `ml/embeddings.py`. Distinguish retryable errors from refusals.
 
 ## Scaling Limits
 
-**No persistence — all state lost on restart:**
-- Current capacity: per-request only
-- Limit: legacy `explanation_store` dict grows unbounded in `backend/routes/compare.py`
-- Symptoms at limit: memory leak in long-running process
-- Scaling path: Move legacy explanation cache to Redis or strip the endpoint
+**No persistence:**
+- Files: `backend/routes/compare.py` (`explanation_store`)
+- Issue: Explanation polling state lives in a process-local dict; lost on restart and unsafe across multiple workers.
+- Impact: Can't horizontally scale the legacy compare flow.
+- Fix approach: If `/compare` survives, move state to Redis or drop the polling pattern entirely.
 
-**OpenAI rate limits:**
-- Current capacity: tier-dependent (default 3500 req/min for embeddings)
-- Symptoms at limit: tenacity retries 6× with backoff, then re-raises → 500
-- Scaling path: Acceptable for hackathon; add request-level concurrency limiter if scaling up
-
-## Dependencies at Risk
-
-**`anthropic` 0.39.0 declared but unused:**
-- Risk: Dead dependency; bloat without value yet
-- Files: `backend/requirements.txt`
-- Impact: Negligible
-- Fix approach: Either wire up the explanation flow OR drop the dependency until needed
-
-**`scikit-learn`, `scipy` declared but unused:**
-- Risk: Same as above — pre-emptively installed, never imported
-- Files: `backend/requirements.txt`
-- Fix approach: Drop or use
-
-**`pydantic` missing from `ml/requirements.txt`:**
-- Issue: `ml/classification.py`, `ml/concepts.py` import pydantic; mirror file omits it
-- Files: `ml/requirements.txt`
-- Impact: ML slice cannot install standalone as advertised
-- Fix approach: Add `pydantic==2.9.2` to `ml/requirements.txt`
-
-## Missing Critical Features
-
-**Merged-clause representation undefined:**
-- Problem: `ClauseRendering.paired_with: Optional[str]` cannot represent 1:N or N:1 merges
-- Files: `backend/models/schemas.py`
-- Blocks: Faithful representation of Winston's "merged" status
-- Implementation complexity: Low — extend `paired_with` to `Optional[str | list[str]]` OR add `Classification = "merged"`
-
-**Concept evidence not linked to clause IDs:**
-- Problem: `Concept.evidence_before_ids` / `evidence_after_ids` declared but never populated by `ml/concepts.py`
-- Files: `ml/concepts.py`, `backend/models/schemas.py`
-- Blocks: "Click concept → highlight clause" UX
-- Implementation complexity: Medium — substring-match evidence quotes against clauses post-extraction
-
-**Async LLM-explanation flow stubbed but not wired:**
-- Problem: `BackgroundTasks` reference in `backend/routes/compare.py:168` is a TODO; `routes/explanation.py` polling endpoint exists but receives nothing
-- Files: `backend/routes/compare.py`, `backend/routes/explanation.py`
-- Blocks: Anthropic-powered explanations
-- Implementation complexity: Medium — wire Anthropic SDK + background task
+**Multilingual thresholds not calibrated:**
+- Files: `ml/thresholds.py`, `notes/multilingual-handoff.md`
+- Issue: `STABLE_THRESHOLD=0.93` / `MODIFIED_THRESHOLD=0.65` are tuned for same-language pairs. Faithful translations sit around 0.80–0.88, so most cross-lingual pairs will be tagged `modified`.
+- Impact: False positives for cross-lingual diffs.
+- Fix approach: Run the threshold-tuning sprint (`ML_ARCHITECTURE.md` §7) once translation pairs are available. Config-only change in `ml/thresholds.py`.
 
 ## Test Coverage Gaps
 
-**No route-level tests for `/api/diff`:**
-- What's not tested: HTTP layer, CORS, request validation, status code mapping
-- Files: `backend/routes/diff.py` — no `tests/test_routes_diff.py`
-- Risk: Schema or routing regressions slip through unit tests
-- Priority: HIGH
-- Difficulty: Low — FastAPI `TestClient` + monkeypatched `run_diff`
+**`ml/test_cases.py` is not a real test suite:**
+- Files: `ml/test_cases.py`
+- Issue: Contains 12+ fixture cases for threshold tuning, but no pytest assertions. Naming overlaps with pytest convention; only excluded because `pytest.ini` restricts collection to `tests/`.
+- Fix approach: Rename to `ml/_threshold_tuning_corpus.py` to make intent obvious. Wire into a real regression test once thresholds stabilize.
 
-**No tests for the alignment adapter:**
-- What's not tested: `backend/services/align.py` translation between Winston's output and `AlignmentResult`
-- Files: `backend/services/align.py`
-- Risk: Adapter bugs surface at integration time
-- Priority: HIGH (write before merging Winston's code)
-- Difficulty: Medium — needs sample Winston output fixtures
+**Legacy `/compare` route untested:**
+- Files: `backend/routes/compare.py`, `backend/services/ml_client.py`
+- Issue: No tests cover the legacy mock path or the in-memory explanation store.
+- Fix approach: Either deprecate (no tests needed) or add `tests/test_compare_route.py`.
 
-**No failure-path test for concept extraction:**
-- What's not tested: That `extract_concepts` returns empty + `status="failed"` on exception
-- Files: `ml/concepts.py`
-- Priority: MEDIUM
-- Difficulty: Low — patch `AsyncOpenAI` to raise
+**No live OpenAI integration test:**
+- Files: `tests/`
+- Issue: All OpenAI calls are mocked. No smoke test against the real API.
+- Fix approach: Add a gated integration test (e.g., `pytest -m live`) that exercises a tiny diff against the real API. Skip in CI by default.
 
-**No CORS smoke test:**
-- What's not tested: Wide-open CORS configuration
+## Missing Critical Features
+
+**Health check endpoints are stubs:**
 - Files: `backend/main.py`
-- Priority: LOW
-- Difficulty: Low
+- Issue: `/health` returns `"not_checked"` for spaCy and OpenAI.
+- Fix approach: Implement quick checks — `spacy.load(...)` in a try, an inexpensive OpenAI `models.list()` call.
 
-## Documentation Gaps
+**No structured logging / observability:**
+- Files: across the codebase
+- Issue: Errors via `print(..., file=sys.stderr)`; no request IDs, no per-step timing, no telemetry.
+- Fix approach: Add `logging` config (JSON formatter), per-request correlation IDs, optional OTel integration. Replace stderr `print` calls.
 
-**Threshold-tuning runbook missing:**
-- Issue: `ML_ARCHITECTURE.md` §7 references a "5-example, 20-minute tuning sprint" but no script exists
-- Files: `ml/thresholds.py`
-- Fix approach: Add `ml/tune_thresholds.py` once real embeddings are reachable
+## Dependencies at Risk
 
-**No runbook for `/api/diff` deployment:**
-- Issue: `README.md` documents legacy endpoints; doesn't call out that `/api/diff` requires `OPENAI_API_KEY`
-- Files: `README.md`
-- Fix approach: Add a section once API stabilizes
+**scipy 1.14.1 / scikit-learn 1.5.2:**
+- Files: `backend/requirements.txt`, `ml/requirements.txt`
+- Issue: Both have known low-severity CVEs (scipy: CVE-2024-35192; sklearn: CVE-2024-4685). Not exploitable in this app's surface, but flagged for awareness.
+- Fix approach: Add `pip-audit` or Dependabot. Bump on next routine maintenance.
+
+**No lockfiles committed:**
+- Files: `backend/requirements.txt`, `ml/requirements.txt`, `frontend/package.json`
+- Issue: Pinned exact versions in requirements but no `*.lock` to capture transitive deps. Frontend has no `package-lock.json`.
+- Fix approach: Generate and commit `package-lock.json`. Consider `pip-compile` for Python.
 
 ---
 

@@ -5,120 +5,125 @@
 ## Naming Patterns
 
 **Files:**
-- `snake_case.py` for all Python modules (e.g., `ml/embeddings.py`, `backend/services/align.py`)
-- `_underscore_prefix.py` for dev-only/internal modules (e.g., `ml/_mock_align.py`)
-- `test_<module>.py` for tests, mirroring source module name
+- snake_case for Python (`ml_client.py`, `test_cases.py`)
+- Underscore-prefixed for internal/private modules (`_mock_align.py`, `_align_impl.py`)
+- PascalCase `.tsx` for React components (`DiffViewer.tsx`, `InputPanel.tsx`)
+- kebab-case `.md` for cross-team notes (`integration-with-winston.md`)
 
-**Functions:**
-- `snake_case` (e.g., `run_diff`, `embed_clauses`, `cosine_to_drift`, `classify_pairs`)
-- Underscore-prefixed for module-private helpers (`_build_before_clauses`, `_unit`, `_near`, `_pair`)
+**Functions / Variables:**
+- snake_case throughout (`tokenize_text`, `embed_clauses`, `score_pair`, `cosine_to_drift`, `classify_pairs`)
+- Async I/O-bound functions use `async def` (no special prefix)
 
-**Variables:**
-- `snake_case` for locals
-- `UPPER_SNAKE_CASE` for module constants (`STABLE_THRESHOLD`, `EMBEDDING_MODEL`, `FULL_DRIFT`)
+**Classes / Pydantic models:**
+- PascalCase: `CompareRequest`, `DiffResponse`, `ClauseUnit`, `AlignmentResult`, `ClassifiedPair`
+
+**Constants:**
+- UPPER_SNAKE_CASE (`STABLE_THRESHOLD`, `EMBEDDING_MODEL`, `MAX_CONCEPT_INPUT_CHARS`, `USE_REAL_ALIGN`)
+- Underscore-prefixed for module-private constants (`_RETRYABLE_OPENAI_ERRORS`, `_PROJECT_ROOT`)
 
 **Types:**
-- `PascalCase` for Pydantic models and dataclasses (`AlignedPair`, `ClassifiedPair`, `DiffResponse`, `ClauseUnit`)
-- `PascalCase` for `Literal` type aliases (`Classification`, `ConceptStatus`)
-
-**Identifiers (domain-specific):**
-- Clause IDs: `b{n}` for before, `a{n}` for after (assumed throughout pipeline)
+- `Literal[...]` for closed-set string types (`Classification`, `ConceptStatus`)
+- Modern Python 3.10+ generics: `list[str]`, `dict[str, np.ndarray]` (not `List` / `Dict`)
+- `Optional[T]` for nullable
 
 ## Code Style
 
 **Formatting:**
-- 4-space indentation (PEP 8)
-- Double quotes for strings (consistent across codebase)
-- Modern type hints: lowercase generics (`list[X]`, `dict[str, Y]`, `tuple[...]`) — no `List`/`Dict` from `typing`
-- Approx. 80–100 char line length (no enforced cap)
+- 4-space indentation
+- Double quotes for strings and docstrings
+- Line length: ~80–88 chars (no formatter config detected — likely Black-compatible by convention)
+- No semicolons (Python)
+- Type hints on virtually every function signature
 
-**Linting:**
-- No linter config detected (`ruff`, `flake8`, `black`, `isort` all absent)
-- Relies on implicit PEP 8 + comprehensive type hints
-- No `pyproject.toml` defining tool config
+**Linting / Formatting tools:**
+- No `pyproject.toml [tool.ruff/black]`, `.flake8`, or `.pre-commit-config.yaml` detected
+- Conventions enforced manually / by review
 
 ## Import Organization
 
-**Order (PEP 8 style):**
-1. stdlib (`import asyncio`, `import time`, `import sys`)
-2. third-party (`from openai import AsyncOpenAI`, `import numpy as np`)
-3. local (`from backend.models.schemas import ...`, `from ml.thresholds import ...`)
+**Order (observed):**
+1. Standard library (`os`, `sys`, `asyncio`, `pathlib.Path`)
+2. Third-party (`fastapi`, `pydantic`, `numpy`, `openai`, `tenacity`)
+3. Local — both styles in use:
+   - Absolute: `from backend.models.schemas import ...`, `from ml.embeddings import ...`
+   - Relative-ish: `from models.schemas import ...`, `from services.tokenizer import ...` (works because `backend/main.py` and `tests/conftest.py` adjust `sys.path`)
 
-**Grouping:** Blank line between groups; alphabetical within group.
+**Grouping:**
+- Blank line between groups (informal)
+- No automated import sorting tool detected
 
-**Path aliases:** None — use full absolute imports (e.g., `from ml.pipeline import run_diff`, not `from .pipeline import ...`). This requires the `sys.path` injection in `backend/main.py` and `tests/conftest.py`.
+**Path Aliases:**
+- None — `sys.path` manipulation in `backend/main.py` and `tests/conftest.py` enables both module styles
 
 ## Error Handling
 
 **Patterns:**
-- Broad `try/except Exception as exc:` at integration boundaries (see `ml/concepts.py:88-92`, `backend/routes/diff.py:14-20`)
-- Graceful degradation in ML slice — return empty result + status flag rather than propagate
-- HTTP boundary raises `HTTPException(500, detail=...) from exc`
-- Tenacity decorator for retryable transients in `ml/embeddings.py`
-- Defensive clamps on numeric outputs (`max(-1.0, min(1.0, sim))` in `ml/scoring.py`)
+- **Defensive retry at boundaries:** `ml/embeddings.py` wraps OpenAI calls with `@retry()` (tenacity), 6 attempts, exponential backoff, retryable on `(RateLimitError, APIConnectionError, APIStatusError)`
+- **Graceful degradation for best-effort steps:** `ml/concepts.py` and `ml/pipeline.py` catch `Exception` and return `ConceptDiff(status="failed")` so the pipeline finishes
+- **Empty-input defense:** `embed_clauses()` substitutes `" "` for empty strings to avoid OpenAI 400s
+- **Numerical clamping:** Cosine clamped to `[-1.0, 1.0]` via `min/max` (`ml/scoring.py`)
+- **Manual fallback in tokenizer:** spaCy → naive regex split (`backend/services/tokenizer.py`); uses bare `except:` (flagged in CONCERNS.md)
+- **Route-level catch:** `backend/routes/diff.py` wraps `run_diff()` in `try/except Exception` → `HTTPException(500)`
 
-**Error types:**
-- Standard library exceptions; no custom Error subclasses defined
-- OpenAI SDK exceptions (`RateLimitError`, `APIConnectionError`, `APIStatusError`) explicitly enumerated in retry config
+**Custom errors:**
+- None defined — relies on stdlib `Exception` and `HTTPException` from FastAPI
 
 ## Logging
 
 **Framework:**
-- None — `print(..., file=sys.stderr)` only
-- Examples: `ml/concepts.py:80-92`, `backend/main.py:21-30`, `backend/routes/diff.py:20`
+- No `logging` module configured
+- `print(..., file=sys.stderr)` for warnings and best-effort failure messages
+- Locations: `backend/main.py` (env var warnings), `backend/services/tokenizer.py` (spaCy fallback warning), `ml/concepts.py` (concept extraction failure), `ml/demo.py`
 
 **Patterns:**
-- Stderr-only, unstructured
-- No correlation IDs, no levels
-- Mostly silent on success; emits only on warnings/errors
+- Unstructured stderr writes only — no JSON logging, request IDs, or timing
 
-## Comments & Docstrings
+## Comments / Docstrings
 
-**Module docstrings:**
-- Present on all `ml/*.py` modules; describe pipeline step + ownership note (e.g., "Owner: Agent 2 (embed/score/classify)")
-- Reference architecture spec sections (e.g., "per ML_ARCHITECTURE.md §1")
+**Module-level docstrings:**
+- Every module has a top docstring describing its role and owner where relevant. Examples:
+  - `ml/embeddings.py` — `"""Step 1 — Embeddings. Owner: Agent 2..."""`
+  - `ml/scoring.py` — `"""Step 2 — Scoring..."""`
 
 **Function docstrings:**
-- Google-style multi-line docstrings on public functions
-- Pure functions get short docstrings; orchestrators get numbered procedural descriptions
+- Google-style: `Args:`, `Returns:`, `Notes:` sections. Example from `backend/services/tokenizer.py`:
+  ```python
+  def tokenize_text(text: str) -> list[str]:
+      """
+      Split text into sentences.
+
+      Args:
+          text: Input text to tokenize
+
+      Returns:
+          List of sentence strings, whitespace stripped, empty strings removed
+      """
+  ```
+
+**Pydantic field descriptions:**
+- Heavy use of `Field(..., description="...")` on schema fields in `backend/models/schemas.py`
 
 **Inline comments:**
-- Used to clarify non-obvious logic (e.g., "Weights by combined character length of both sides")
-- Sparse and high-signal
+- Sparing — primarily for non-obvious intent (e.g., backwards-compat aliases in `ml/scoring.py`)
 
 **TODO comments:**
-- Present (e.g., `backend/main.py:24` Anthropic stub, `backend/routes/compare.py:168` LLM-explanation stub)
-- No formal `TODO(username):` convention
+- Plain `# TODO: ...` (no username convention)
+- Examples in `backend/main.py` (`/health` checks), `backend/services/ml_client.py` (legacy stub)
 
 ## Function Design
 
-**Size:** Generally 10–50 lines; pure ML functions stay small.
-
-**Parameters:** Type-hinted; small parameter lists (≤4) typical. No object-bag pattern observed.
-
-**Return values:**
-- Explicit returns
-- Multiple-return tuples used (e.g., `classify_pairs` returns `(kept, split)`)
-- Pydantic models for cross-boundary returns
-
-**Async:** `async def` only where I/O-bound (`embed_clauses`, `extract_concepts`, `run_diff`); pure helpers stay sync.
-
-**Pure-function bias:** ML scoring/classification/metrics are pure (no I/O, no mutation of inputs).
+**Size:** Mostly compact, 10–50 lines; helpers extracted aggressively
+**Parameters:** Tight, function-specific (`score_pair(a, b)`); rarely exceed 3 args
+**Return values:** Explicit and typed; tuples used for multi-return (`(pair, sim, drift)`)
+**Async split:** I/O-bound = `async def` (`embed_clauses`, `extract_concepts`, `align`); pure compute = sync (`score_pairs`, `classify_pairs`, `aggregate_metrics`)
 
 ## Module Design
 
-**Exports:**
-- No explicit `__all__`
-- Modules expose top-level functions/classes by import path (no barrel re-exports)
-- `ml/__init__.py` and `backend/models/__init__.py` are docstring-only
-
-**Internal vs public:**
-- Underscore prefix marks private (`_mock_align.py`, `_build_before_clauses`)
-- Public API is everything else
-
-**Circular dependency avoidance:**
-- `ml/` and `backend/services/` both import from `backend/models/schemas.py` (one-way dependency on schemas)
-- `backend/services/align.py` imports `ml/_mock_align`, but `ml/` does not import from `backend/services/`
+**Schema location:** `backend/models/schemas.py` is the single source of truth for DTOs — both legacy and new contracts
+**Threshold location:** `ml/thresholds.py` is the single source of truth for tunables
+**Barrel files:** `__init__.py` files are minimal/empty — no re-exports; consumers import directly from leaf modules
+**Service abstraction:** `backend/services/` contains seams (alignment dispatcher, tokenizer); ML slice (`ml/`) imports from it
+**ML pipeline split:** Each step lives in its own module (`embeddings.py`, `scoring.py`, ...); `pipeline.py` orchestrates
 
 ---
 
