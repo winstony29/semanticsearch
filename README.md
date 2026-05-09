@@ -151,6 +151,32 @@ Use the sample data in `test_data/`:
 # Expected: 1 GREEN, 1 YELLOW, 1 ADDED
 ```
 
+## 🔬 ML Alignment Experiments (For Nickolas)
+
+**🚀 TRY IT NOW - No API keys needed!**
+
+```bash
+cd ml
+python quick_test.py        # 30 seconds - one clear example
+python visual_demo.py        # 2 minutes - see similarity matrices
+python demo.py               # 5 minutes - full interactive walkthrough
+```
+
+All demos use smart mock embeddings so you can test RIGHT NOW!
+
+**Available alignment methods:**
+- `lexical_hungarian` - TF-IDF similarity (fast but fails on paraphrasing)
+- `semantic_hungarian` - Embedding-based (recommended for MVP) ⭐
+- `hybrid_hungarian` - Lexical pre-filter + semantic refinement
+- `greedy_with_merges` - Handles 2→1 and 1→2 sentence merging/splitting
+- `adaptive_hungarian` - Auto-selects based on quality (recommended for production) ⭐
+
+**Test cases:** 12 edge cases including heavy paraphrasing, merges, splits, reordering, etc.
+
+**Docs:**
+- `ml/DEMO_GUIDE.md` - How to run all the demos
+- `ml/NICKOLAS_README.md` - Deep dive analysis and recommendations
+
 ## 🛠️ Implementation Status
 
 ### ✅ Completed (Pre-hackathon)
@@ -158,6 +184,9 @@ Use the sample data in `test_data/`:
 - [x] All Pydantic models (data contract)
 - [x] Sentence tokenization with spaCy
 - [x] ML pipeline skeleton (embeddings + Hungarian)
+- [x] **5 different alignment methods with experiments**
+- [x] **12 edge case test scenarios**
+- [x] **Experiment comparison framework**
 - [x] LLM explanation module
 - [x] Frontend structure with React + TypeScript
 - [x] All TypeScript types (data contract)
@@ -174,11 +203,12 @@ Use the sample data in `test_data/`:
 - [ ] Test end-to-end with real ML pipeline
 
 **Nickolas (ML):**
+- [ ] Run experiments with real embeddings (`python ml/run_experiments.py`)
+- [ ] Choose alignment method (semantic_hungarian for MVP, adaptive for production)
 - [ ] Implement actual embedding API call (OpenAI or sentence-transformers)
-- [ ] Test Hungarian alignment with real data
-- [ ] Calibrate similarity thresholds (0.85, 0.60)
+- [ ] Calibrate similarity thresholds based on experiment results
 - [ ] Test LLM explanation prompt quality
-- [ ] Handle edge cases (empty, identical, totally rewritten)
+- [ ] Integrate chosen method into semantic_engine.py
 
 **FE Engineer 1 (Diff Viewer):**
 - [ ] Implement full styling for diff viewer
@@ -219,12 +249,23 @@ THRESHOLD_YELLOW = 0.60  # Moderate drift
 Currently using: `claude-sonnet-4-20250514`
 - Fallback: GPT-4o-mini
 
+## 🔧 Quick Fixes to Get Working
+
+**See `FIXES_NEEDED.md` for detailed list of all stubs**
+
+**Critical path (30 minutes):**
+1. Fix ML embeddings (`ml/semantic_engine.py:65`) - Copy from `QUICK_FIXES/fix1_embeddings_openai.py`
+2. Wire backend to ML (`backend/services/ml_client.py:11`) - Copy from `QUICK_FIXES/fix2_backend_integration.py`
+3. Add async explanations (`backend/routes/compare.py:10`) - Copy from `QUICK_FIXES/fix3_async_explanations.py`
+
+**All code is copy-paste ready in `QUICK_FIXES/` folder!**
+
 ## 📝 Notes
 
-- Mock ML results are currently returned from `backend/services/ml_client.py`
-- Replace the `_mock_ml_result()` function once real ML pipeline is ready
+- Mock ML results are currently returned from `backend/services/ml_client.py` → **Fix with QUICK_FIXES/fix2**
+- Mock embeddings in `ml/semantic_engine.py` → **Fix with QUICK_FIXES/fix1**
 - Frontend components have basic structure but need CSS styling
-- Async explanation generation is stubbed (TODO in `routes/compare.py`)
+- Async explanation generation is stubbed → **Fix with QUICK_FIXES/fix3**
 
 ## 🎉 Demo
 
